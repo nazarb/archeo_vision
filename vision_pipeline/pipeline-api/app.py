@@ -114,8 +114,8 @@ def extract_json_from_markdown(text: str) -> str:
 
 def parse_qwen_response(response_text: str, image_width: int, image_height: int) -> List[DetectionBox]:
     """
-    Parse Qwen response to extract boxes with 4 points
-    Preserves raw pixel coordinates from Qwen without normalization
+    Parse Qwen/LLaVa response to extract boxes with 4 points
+    Handles both normalized (0-1) YOLO format and pixel coordinates
     """
     boxes = []
     
@@ -146,16 +146,16 @@ def parse_qwen_response(response_text: str, image_width: int, image_height: int)
         
         # Handle different response formats
         if isinstance(data, dict):
-            # Single object
-            if "box" in data:
+            # Check for pottery/annotations format
+            if "annotations" in data:
+                data = data["annotations"]
+            elif "box" in data or "bbox" in data:
                 data = [data]
-            # Objects under a key
             elif "objects" in data:
                 data = data["objects"]
             elif "detections" in data:
                 data = data["detections"]
             else:
-                # Look for any list value
                 for value in data.values():
                     if isinstance(value, list):
                         data = value
@@ -176,67 +176,93 @@ def parse_qwen_response(response_text: str, image_width: int, image_height: int)
             # Get box coordinates
             box = item.get("box", item.get("bbox", item.get("bounding_box")))
             
-            if not box:
+            if not box or not isinstance(box, list):
                 continue
             
-            # Handle different box formats
-            if isinstance(box, list):
-                if len(box) == 8:
-                    # [x1, y1, x2, y2, x3, y3, x4, y4] format - use directly
-                    boxes.append(DetectionBox(
-                        x1=float(box[0]),
-                        y1=float(box[1]),
-                        x2=float(box[2]),
-                        y2=float(box[3]),
-                        x3=float(box[4]),
-                        y3=float(box[5]),
-                        x4=float(box[6]),
-                        y4=float(box[7]),
-                        label=str(label)
-                    ))
-                elif len(box) == 4:
-                    # [x_min, y_min, x_max, y_max] format - convert to 4 points
+            # Determine if coordinates are normalized (YOLO format) or pixels
+            # Check if all values are between 0 and 1 (or slightly above 1)
+            is_normalized = all(0 <= abs(val) <= 2 for val in box)
+            
+            if len(box) == 4:
+                # Determine format by checking if values suggest center-based or corner-based
+                # YOLO: [x_center, y_center, width, height] - width and height are typically < 1
+                # Corners: [x_min, y_min, x_max, y_max] - x_max > x_min, y_max > y_min
+                
+                if is_normalized and max(box) <= 1.5:
+                    # Normalized coordinates (0-1 range)
+                    # Check if it's YOLO format or corners format
+                    
+                    # If box[2] < box[0] or box[3] < box[1], it's likely YOLO format (width/height)
+                    # If box[2] > box[0] and box[3] > box[1], it's corners format
+                    
+                    if box[2] > box[0] and box[3] > box[1]:
+                        # Normalized corners format: [x_min, y_min, x_max, y_max]
+                        x_min = box[0] * image_width
+                        y_min = box[1] * image_height
+                        x_max = box[2] * image_width
+                        y_max = box[3] * image_height
+                        
+                        logger.info(f"Converted normalized corners: {box} -> pixels: [{x_min:.1f}, {y_min:.1f}, {x_max:.1f}, {y_max:.1f}]")
+                    else:
+                        # YOLO format: [x_center, y_center, width, height]
+                        x_center, y_center, w, h = box
+                        
+                        # Convert to pixel coordinates
+                        x_center_px = x_center * image_width
+                        y_center_px = y_center * image_height
+                        w_px = w * image_width
+                        h_px = h * image_height
+                        
+                        # Convert to corner coordinates
+                        x_min = x_center_px - w_px / 2
+                        y_min = y_center_px - h_px / 2
+                        x_max = x_center_px + w_px / 2
+                        y_max = y_center_px + h_px / 2
+                        
+                        logger.info(f"Converted YOLO format: {box} -> corners: [{x_min:.1f}, {y_min:.1f}, {x_max:.1f}, {y_max:.1f}]")
+                else:
+                    # Corner format in pixels: [x_min, y_min, x_max, y_max]
                     x_min, y_min, x_max, y_max = box
-                    boxes.append(DetectionBox(
-                        x1=float(x_min),
-                        y1=float(y_min),
-                        x2=float(x_max),
-                        y2=float(y_min),
-                        x3=float(x_max),
-                        y3=float(y_max),
-                        x4=float(x_min),
-                        y4=float(y_max),
-                        label=str(label)
-                    ))
-            elif isinstance(box, dict):
-                # Dictionary format
-                if all(k in box for k in ["x1", "y1", "x2", "y2", "x3", "y3", "x4", "y4"]):
-                    boxes.append(DetectionBox(
-                        x1=float(box["x1"]),
-                        y1=float(box["y1"]),
-                        x2=float(box["x2"]),
-                        y2=float(box["y2"]),
-                        x3=float(box["x3"]),
-                        y3=float(box["y3"]),
-                        x4=float(box["x4"]),
-                        y4=float(box["y4"]),
-                        label=str(label)
-                    ))
-                elif all(k in box for k in ["x_min", "y_min", "x_max", "y_max"]):
-                    boxes.append(DetectionBox(
-                        x1=float(box["x_min"]),
-                        y1=float(box["y_min"]),
-                        x2=float(box["x_max"]),
-                        y2=float(box["y_min"]),
-                        x3=float(box["x_max"]),
-                        y3=float(box["y_max"]),
-                        x4=float(box["x_min"]),
-                        y4=float(box["y_max"]),
-                        label=str(label)
-                    ))
+                    logger.info(f"Using pixel corners: [{x_min:.1f}, {y_min:.1f}, {x_max:.1f}, {y_max:.1f}]")
+                
+                # Create 4-point box from corners
+                boxes.append(DetectionBox(
+                    x1=float(x_min),
+                    y1=float(y_min),
+                    x2=float(x_max),
+                    y2=float(y_min),
+                    x3=float(x_max),
+                    y3=float(y_max),
+                    x4=float(x_min),
+                    y4=float(y_max),
+                    label=str(label)
+                ))
+                
+            elif len(box) == 8:
+                # 8-point format [x1, y1, x2, y2, x3, y3, x4, y4]
+                if is_normalized:
+                    # Denormalize
+                    box = [
+                        box[0] * image_width, box[1] * image_height,
+                        box[2] * image_width, box[3] * image_height,
+                        box[4] * image_width, box[5] * image_height,
+                        box[6] * image_width, box[7] * image_height
+                    ]
+                
+                boxes.append(DetectionBox(
+                    x1=float(box[0]),
+                    y1=float(box[1]),
+                    x2=float(box[2]),
+                    y2=float(box[3]),
+                    x3=float(box[4]),
+                    y3=float(box[5]),
+                    x4=float(box[6]),
+                    y4=float(box[7]),
+                    label=str(label)
+                ))
         
     except Exception as e:
-        logger.error(f"Error parsing Qwen response: {e}", exc_info=True)
+        logger.error(f"Error parsing response: {e}", exc_info=True)
     
     return boxes
 
