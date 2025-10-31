@@ -209,19 +209,96 @@ client.process_image(Path("archeo-shared/images/pottery.jpg"), prompt)
 - **Accuracy**: High for clear labels and well-lit images
 - **GPU memory**: ~5-8GB (7B model), ~40GB (72B model)
 
-## Output Quality
+## File Organization Tool
 
-The pipeline produces:
-- ✓ Accurate bounding boxes in pixel coordinates
-- ✓ OCR-read text labels from pottery
-- ✓ Main catalog label extraction
-- ✓ Structured JSON ready for database import
-- ✓ Visual verification images
+After processing images, use the organizer to rename and organize files by their catalog labels.
 
-## Support
+### Usage
 
-For issues:
-1. Check logs: `tail -100 archeo-shared/results/*.json`
-2. Verify services: `curl http://localhost:8080/health`
-3. Test with sample image first
-4. Check TROUBLESHOOTING.md for common issues
+```bash
+# Basic organization
+python archeo_file_organizer.py
+
+# With index creation
+python archeo_file_organizer.py --create-index
+```
+
+### What It Does
+
+1. **Reads JSON files** from `archeo-shared/results/`
+2. **Extracts main_label** (e.g., "2025-B2164-A3")
+3. **Finds matching image** in `archeo-shared/images/`
+4. **Copies both files** to `archeo-shared/final/` with new names:
+   - Image: `2025-B2164-A3.jpg`
+   - JSON: `2025-B2164-A3.json`
+5. **Updates image_path** in JSON to reflect new location
+
+### Example
+
+**Before:**
+```
+archeo-shared/
+├── images/
+│   └── IMG_20250128_143022.jpg
+└── results/
+    └── IMG_20250128_143022_pottery.json
+```
+
+**After:**
+```
+archeo-shared/
+└── final/
+    ├── 2025-B2164-A3.jpg        # Renamed image
+    ├── 2025-B2164-A3.json       # Renamed JSON with updated path
+    ├── index.json                # Optional: Collection index
+    └── index.txt                 # Optional: Human-readable listing
+```
+
+### Index Files
+
+Use `--create-index` to generate:
+
+**index.json:**
+```json
+{
+  "total_files": 5,
+  "pottery_collections": [
+    {
+      "main_label": "2025-B2164-A3",
+      "image_file": "2025-B2164-A3.jpg",
+      "json_file": "2025-B2164-A3.json",
+      "pottery_count": 6,
+      "labels": ["D25B2164A3-1", "D25B2164A3-2", ...]
+    }
+  ]
+}
+```
+
+**index.txt:**
+```
+Archaeological Pottery Collection Index
+============================================================
+
+1. 2025-B2164-A3
+   Image: 2025-B2164-A3.jpg
+   Pottery pieces: 6
+   Labels: D25B2164A3-1, D25B2164A3-2, ...
+```
+
+## Complete Workflow
+
+### 1. Process Images
+
+```bash
+python archeo_vision_client.py --model qwen2.5-vl:7b
+```
+
+### 2. Organize Files
+
+```bash
+python archeo_file_organizer.py --create-index
+```
+
+### 3. Results
+
+All files are now organized in `archeo-shared/final/` with catalog-based naming!
