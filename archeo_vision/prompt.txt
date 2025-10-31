@@ -1,1 +1,47 @@
+You are provided with an image of size {width} x {height} containing several pottery pieces and labels. The image also includes a yellow sticky note with a label and a scale bar for reference.
 
+Your task is to create a JSON file that includes the following information:
+
+1. The main label written on the yellow card (main_label)
+2. The actual image dimensions you are processing (image_size)
+3. Annotations for each pottery piece, including:
+   - Their bounding box coordinates in format [left, top, right, bottom] using PIXEL coordinates
+   - The label text written on each pottery piece
+
+CRITICAL REQUIREMENTS:
+- Use ABSOLUTE PIXEL coordinates (not normalized 0-1 values)
+- Format: [left, top, right, bottom]
+- Carefully read ALL text on pottery pieces
+- Include the image size you actually processed
+
+Return ONLY this exact JSON format:
+```json
+{
+  "main_label": "text from yellow sticky note",
+  "image_size": "width, height",
+  "annotations": [
+    {
+      "bbox_2d": [left, top, right, bottom],
+      "label": "text on pottery piece"
+    }
+  ]
+}
+```
+
+Example:
+```json
+{
+  "main_label": "2025-B2164-A3",
+  "image_size": "2560, 975",
+  "annotations": [
+    {
+      "bbox_2d": [88, 97, 252, 222],
+      "label": "D25B2164A3-4"
+    },
+    {
+      "bbox_2d": [274, 134, 472, 294],
+      "label": "D25B2164A3-1"
+    }
+  ]
+}
+```
