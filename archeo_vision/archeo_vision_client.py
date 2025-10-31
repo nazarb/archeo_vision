@@ -326,8 +326,8 @@ def main():
     )
     parser.add_argument(
         "--model",
-        default="qwen2.5-vl:7b",
-        help="Vision model to use (default: qwen2.5-vl:7b)"
+        default="qwen3-vl:8b",
+        help="Vision model to use (default: qwen3-vl:8b)"
     )
     
     args = parser.parse_args()

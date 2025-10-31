@@ -185,15 +185,15 @@ if [ "$models" -eq 0 ]; then
     echo -e "${YELLOW}⚠ No Qwen model found${NC}"
     echo ""
     echo "You need to pull a Qwen VL model. Choose one:"
-    echo "  1. qwen2-vl:7b  (Recommended for testing, ~4GB)"
-    echo "  2. qwen2-vl:72b (Best quality, ~40GB)"
+    echo "  1. qwen3-vl:8b     (Recommended, ~8GB)"
+    echo "  2. qwen2.5-vl:7b   (Smaller alternative, ~4GB)"
     echo ""
     read -p "Enter choice (1 or 2): " model_choice
-    
+
     if [ "$model_choice" = "1" ]; then
-        model="qwen2-vl:7b"
+        model="qwen3-vl:8b"
     else
-        model="qwen2-vl:72b"
+        model="qwen2.5-vl:7b"
     fi
     
     echo ""

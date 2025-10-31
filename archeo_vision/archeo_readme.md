@@ -37,7 +37,7 @@ sudo docker compose up -d
 ### 4. Run the Pipeline
 
 ```bash
-python archeo_vision_client.py --model qwen2.5-vl:7b
+python archeo_vision_client.py --model qwen3-vl:8b
 ```
 
 ## Output Format
@@ -79,13 +79,13 @@ archeo-shared/
 python archeo_vision_client.py \
   --pipeline-url http://localhost:8080 \
   --shared-path ./archeo-shared \
-  --model qwen2.5-vl:7b
+  --model qwen3-vl:8b
 ```
 
 ### Available Models
 
-- `qwen2.5-vl:7b` - Faster, good for testing
-- `qwen2-vl:72b` - More accurate, slower
+- `qwen3-vl:8b` - Recommended, balanced performance
+- `qwen2.5-vl:7b` - Smaller alternative for testing
 - `llava:13b` - Alternative model
 
 ## Output Files
@@ -138,7 +138,7 @@ For each input image `pottery_001.jpg`:
 ### No Detections
 - Check if prompt.txt exists in archeo-shared/
 - Verify image quality and contrast
-- Try different model: `--model qwen2-vl:72b`
+- Try different model: `--model qwen3-vl:8b`
 
 ### Wrong Labels
 - Ensure text is clearly visible
@@ -290,7 +290,7 @@ Archaeological Pottery Collection Index
 ### 1. Process Images
 
 ```bash
-python archeo_vision_client.py --model qwen2.5-vl:7b
+python archeo_vision_client.py --model qwen3-vl:8b
 ```
 
 ### 2. Organize Files

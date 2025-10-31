@@ -1,10 +1,10 @@
-# Vision AI Pipeline with Qwen 2.5 VL + SAM
+# Vision AI Pipeline with Qwen3 VL + SAM
 
-A complete Docker-based vision AI pipeline that combines Ollama's Qwen 2.5 VL (72B) for object detection with Meta's Segment Anything Model (SAM) for instance segmentation.
+A complete Docker-based vision AI pipeline that combines Ollama's Qwen3 VL (8B) for object detection with Meta's Segment Anything Model (SAM) for instance segmentation.
 
 ## Features
 
-- **Object Detection**: Qwen 2.5 VL detects objects with 4-point bounding boxes
+- **Object Detection**: Qwen3 VL detects objects with 4-point bounding boxes
 - **Instance Segmentation**: SAM converts 4-point boxes to precise segmentation masks
 - **Unified API**: Coordinated pipeline with health checks
 - **GPU Support**: NVIDIA CUDA acceleration with CPU fallback
@@ -16,7 +16,7 @@ A complete Docker-based vision AI pipeline that combines Ollama's Qwen 2.5 VL (7
 ```
 ┌─────────────┐     ┌──────────────┐     ┌─────────────┐
 │   Ollama    │────▶│  Pipeline    │────▶│     SAM     │
-│ Qwen 2.5 VL │     │     API      │     │   Service   │
+│  Qwen3 VL   │     │     API      │     │   Service   │
 │  :11434     │     │    :8080     │     │    :8001    │
 └─────────────┘     └──────────────┘     └─────────────┘
        │                    │                     │
@@ -81,16 +81,16 @@ docker-compose up -d
 docker-compose logs -f
 ```
 
-**First Run**: Ollama will automatically download Qwen 2.5 VL (72B) model (~40GB). This may take 15-30 minutes depending on your connection.
+**First Run**: Pull the Qwen3 VL (8B) model (~8GB). This may take 5-15 minutes depending on your connection.
 
 ### 5. Pull Qwen Model (Required on First Run)
 
 ```bash
 # Wait for Ollama to be ready
-docker exec -it vision-ollama ollama pull qwen2-vl:72b
+docker exec -it vision-ollama ollama pull qwen3-vl:8b
 
 # Or use a smaller model for testing
-docker exec -it vision-ollama ollama pull qwen2-vl:7b
+docker exec -it vision-ollama ollama pull qwen2.5-vl:7b
 ```
 
 ### 6. Check Health
@@ -124,7 +124,7 @@ python vision_client.py \
   --pipeline-url http://localhost:8080 \
   --sam-url http://localhost:8001 \
   --shared-path ./shared \
-  --model qwen2-vl:72b
+  --model qwen3-vl:8b
 ```
 
 ## CPU-Only Mode
@@ -153,7 +153,7 @@ docker-compose down
 docker-compose up -d
 ```
 
-**Note**: CPU mode is significantly slower. Consider using smaller models like `qwen2-vl:7b`.
+**Note**: CPU mode is significantly slower. Consider using smaller models like `qwen2.5-vl:7b`.
 
 ## Output Structure
 
@@ -187,7 +187,7 @@ Detect objects using Qwen VL.
 {
   "image_base64": "base64_encoded_image",
   "prompt": "Detect all objects...",
-  "model": "qwen2-vl:72b"
+  "model": "qwen3-vl:8b"
 }
 ```
 
@@ -207,7 +207,7 @@ Detect objects using Qwen VL.
   ],
   "count": 1,
   "image_size": {"width": 800, "height": 600},
-  "model_used": "qwen2-vl:72b"
+  "model_used": "qwen3-vl:8b"
 }
 ```
 
@@ -304,7 +304,7 @@ docker-compose restart ollama
 
 ### Out of memory
 
-- Use smaller Qwen model: `qwen2-vl:7b`
+- Use smaller Qwen model: `qwen2.5-vl:7b`
 - Use smaller SAM model: `vit_b`
 - Reduce image resolution
 - Switch to CPU mode
@@ -368,7 +368,7 @@ with open("image.jpg", "rb") as f:
 response = requests.post("http://localhost:8080/detect", json={
     "image_base64": image_b64,
     "prompt": "Detect all objects",
-    "model": "qwen2-vl:72b"
+    "model": "qwen3-vl:8b"
 })
 
 print(response.json())
@@ -380,9 +380,9 @@ Approximate processing times (RTX 3090):
 
 | Stage | Time | Notes |
 |-------|------|-------|
-| Detection (Qwen 72B) | 5-15s | Depends on image complexity |
+| Detection (Qwen3 8B) | 3-10s | Depends on image complexity |
 | Segmentation (SAM vit_h) | 1-3s | Per object detected |
-| Total (3 objects) | 8-24s | Full pipeline |
+| Total (3 objects) | 6-19s | Full pipeline |
 
 CPU mode: 10-50x slower
 
@@ -408,13 +408,13 @@ Coordinates are in **pixel space** (not normalized).
 
 This project combines multiple components:
 - Ollama: MIT License
-- Qwen 2.5 VL: Apache 2.0
+- Qwen3 VL: Apache 2.0
 - SAM: Apache 2.0
 - FastAPI: MIT License
 
 ## Credits
 
-- **Qwen 2.5 VL**: Alibaba Cloud
+- **Qwen3 VL**: Alibaba Cloud
 - **SAM**: Meta AI Research
 - **Ollama**: Ollama Team
 

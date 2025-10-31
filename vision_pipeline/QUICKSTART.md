@@ -72,11 +72,11 @@ docker-compose logs -f
 ### 2. Download Qwen Model
 
 ```bash
-# For testing (7B model, ~4GB)
-docker exec vision-ollama ollama pull qwen2-vl:7b
+# Recommended (8B model, ~8GB)
+docker exec vision-ollama ollama pull qwen3-vl:8b
 
-# For production (72B model, ~40GB)
-docker exec vision-ollama ollama pull qwen2-vl:72b
+# For smaller systems (7B model, ~4GB)
+docker exec vision-ollama ollama pull qwen2.5-vl:7b
 ```
 
 ### 3. Check Health
@@ -175,7 +175,7 @@ docker-compose restart
 Use smaller models:
 ```bash
 # Smaller Qwen model
-docker exec vision-ollama ollama pull qwen2-vl:7b
+docker exec vision-ollama ollama pull qwen2.5-vl:7b
 
 # Smaller SAM model (edit docker-compose.yml)
 SAM_MODEL_TYPE=vit_b
@@ -222,12 +222,12 @@ Return JSON with label (be specific) and box coordinates.
 ## Performance Tips
 
 ### GPU Mode (Fastest)
-- Use qwen2-vl:72b for best quality
+- Use qwen3-vl:8b for best quality
 - Use SAM vit_h for best segmentation
-- Expect 8-24 seconds per image (3 objects)
+- Expect 6-19 seconds per image (3 objects)
 
 ### CPU Mode (Slower)
-- Use qwen2-vl:7b
+- Use qwen2.5-vl:7b
 - Use SAM vit_b
 - Expect 2-10 minutes per image
 - Process fewer images at once
@@ -282,7 +282,7 @@ segmentations = result["segmentation"]["results"]
 ## Resources
 
 - **Ollama**: https://ollama.ai/
-- **Qwen 2.5 VL**: https://github.com/QwenLM/Qwen2-VL
+- **Qwen3 VL**: https://github.com/QwenLM/Qwen2-VL
 - **SAM**: https://github.com/facebookresearch/segment-anything
 - **Docker**: https://docs.docker.com/
 

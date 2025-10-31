@@ -16,7 +16,7 @@ app = FastAPI(title="Vision AI Pipeline API")
 # Configuration
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://ollama:11434")
 SAM_URL = os.getenv("SAM_URL", "http://sam-service:8001")
-DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "qwen2-vl:72b")
+DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "qwen3-vl:8b")
 
 
 class DetectionBox(BaseModel):

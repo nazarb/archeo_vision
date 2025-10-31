@@ -84,11 +84,11 @@ curl http://localhost:8080/health
 6.  Install selected Ollama model
 
 ```
-sudo docker exec vision-ollama ollama pull qwen2.5-vl:7b
-```
-
-```
+# Pull qwen3-vl:8b model (default)
 sudo docker exec vision-ollama ollama pull qwen3-vl:8b
+
+# Pull qwen2.5-vl:7b model (optional, smaller alternative)
+# sudo docker exec vision-ollama ollama pull qwen2.5-vl:7b
 ```
 7. Try the pipeline. Change the directory to the archaeo_vision
 ```
@@ -97,7 +97,7 @@ cd archaeo-vision
 ```
 8. Run first the detection of the labels. You have to put the images into archaeo_shared/images folder
 ```
-python archeo_vision_client.py --model qwen2.5-vl:7b
+python archeo_vision_client.py --model qwen3-vl:8b
 
 ```
 9. Now run, the code that going to change the names according to results of previous phase

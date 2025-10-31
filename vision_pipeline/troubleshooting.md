@@ -83,7 +83,7 @@ docker info | grep -i runtime
 1. Use smaller models:
 ```bash
 # Qwen
-docker exec vision-ollama ollama pull qwen2-vl:7b  # Instead of 72b
+docker exec vision-ollama ollama pull qwen2.5-vl:7b  # Smaller alternative to qwen3-vl:8b
 ```
 
 2. Change SAM model size in `docker-compose.yml`:
@@ -133,7 +133,7 @@ Find things
 2. Verify model is loaded:
 ```bash
 docker exec vision-ollama ollama list
-# Should show qwen2-vl model
+# Should show qwen3-vl model
 ```
 
 3. Test with simpler prompt:
@@ -172,8 +172,8 @@ Detect and classify objects. Be specific:
 
 2. Use better quality model:
 ```bash
-# If using 7b, upgrade to 72b
-docker exec vision-ollama ollama pull qwen2-vl:72b
+# Use the default qwen3-vl:8b model
+docker exec vision-ollama ollama pull qwen3-vl:8b
 ```
 
 3. Provide examples in prompt:
@@ -313,8 +313,8 @@ nvidia-smi -l 1
 
 2. Use smaller models:
 ```bash
-# Qwen 7B instead of 72B
-docker exec vision-ollama ollama pull qwen2-vl:7b
+# Qwen 2.5-VL 7B (smaller alternative)
+docker exec vision-ollama ollama pull qwen2.5-vl:7b
 
 # SAM vit_b instead of vit_h
 # Edit docker-compose.yml SAM_MODEL_TYPE=vit_b
@@ -670,7 +670,7 @@ docker-compose logs -f
 ```bash
 # Test Ollama directly
 curl -X POST http://localhost:11434/api/generate \
-  -d '{"model": "qwen2-vl:7b", "prompt": "Hello"}'
+  -d '{"model": "qwen3-vl:8b", "prompt": "Hello"}'
 
 # Test SAM directly
 curl http://localhost:8001/health
@@ -684,7 +684,7 @@ curl http://localhost:8080/health
 | Error | Cause | Solution |
 |-------|-------|----------|
 | "CUDA out of memory" | GPU memory full | Use smaller models or CPU mode |
-| "Model not found" | Qwen not pulled | `ollama pull qwen2-vl:7b` |
+| "Model not found" | Qwen not pulled | `ollama pull qwen3-vl:8b` |
 | "Connection refused" | Service not running | `docker-compose up -d` |
 | "Timeout" | Request too slow | Increase timeout, use smaller models |
 | "JSON parse error" | Invalid response | Improve prompt, check raw_response |
