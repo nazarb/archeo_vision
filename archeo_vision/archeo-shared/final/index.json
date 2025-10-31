@@ -1,0 +1,20 @@
+{
+  "total_files": 1,
+  "pottery_collections": [
+    {
+      "main_label": "2025-B2164-A3",
+      "image_file": "2025-B2164-A3.png",
+      "json_file": "2025-B2164-A3.json",
+      "pottery_count": 7,
+      "labels": [
+        "D25B2164A3-4",
+        "D25B2164A3-1",
+        "D25B2164A3-6",
+        "D25B2164A3-3",
+        "D25B2164A3-2",
+        "D25B2164A3-2",
+        "D25B2164A3-7"
+      ]
+    }
+  ]
+}
