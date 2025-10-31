@@ -8,9 +8,19 @@ git clone https://github.com/nazarb/archeo_vision.git
 ```
 2. Change directory to archeo_vision
 
-3. Change director to vision_pipeline
+```
+cd  archeo_vision
+```
 
-4.  
+4. Change director to vision_pipeline
+```
+cd vision_pipeline
+```
+5. Create a virtual enviroment on Ubuntu
+   
+7. 
+
+8.  
 ## First, pull the smaller model
 ```
 sudo docker exec vision-ollama ollama pull qwen2.5-vl:7b
