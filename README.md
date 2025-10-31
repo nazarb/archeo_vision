@@ -25,14 +25,12 @@ which python3.11
 Install python 3.11 if is missing
 
 ```
-
 sudo add-apt-repository ppa:deadsnakes/ppa
 sudo apt update
 sudo apt install python3.11
 
+```
 
-```
-```
 Check the Python
 ```
 which python3.11
