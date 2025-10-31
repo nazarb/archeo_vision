@@ -305,10 +305,10 @@ curl http://localhost:8080/health
 
 ```bash
 # Pull qwen2.5-vl:7b model
-sudo docker exec vision-ollama ollama pull qwen2.5-vl:7b
+sudo docker exec vision-ollama ollama pull qwen2.5vl:7b
 
 # Pull qwen3-vl:8b model (optional)
-sudo docker exec vision-ollama ollama pull qwen3-vl:8b
+# sudo docker exec vision-ollama ollama pull qwen3-vl:8b #needs higher version of ollama
 ```
 
 ### Step 3: Verify Services Are Running
@@ -352,7 +352,7 @@ source ~/archeo_vision/vision_pipeline/venv311/bin/activate
 cd ~/archeo_vision/archeo_vision
 
 # Run label detection
-python archeo_vision_client.py --model qwen2.5-vl:7b
+python archeo_vision_client.py --model qwen2.5vl:7b
 
 # Organize files based on results
 python archeo_file_organizer.py --create-index
