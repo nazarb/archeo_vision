@@ -1,0 +1,15 @@
+Detect all objects in this image. Return the results as a JSON array with each object having:
+- "label": the object class name (e.g., "dog", "cat", "person", "car")
+- "box": 8 coordinates [x1, y1, x2, y2, x3, y3, x4, y4] representing the 4 corners in pixel coordinates
+
+Format the response as valid JSON:
+```json
+[
+  {
+    "label": "object_name",
+    "box": [x1, y1, x2, y2, x3, y3, x4, y4]
+  }
+]
+```
+
+Be specific with labels and ensure all coordinates are in pixel values.
