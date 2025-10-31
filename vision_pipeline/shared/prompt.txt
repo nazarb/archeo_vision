@@ -1,15 +1,23 @@
-Detect all objects in this image. Return the results as a JSON array with each object having:
-- "label": the object class name (e.g., "dog", "cat", "person", "car")
-- "box": 8 coordinates [x1, y1, x2, y2, x3, y3, x4, y4] representing the 4 corners in pixel coordinates
+Analyze this image and detect all visible objects (animals, people, vehicles, etc.).
 
-Format the response as valid JSON:
+For EACH object, provide:
+- "label": specific object type (e.g., "dog", "cat", "person", "car")
+- "box": bounding box in NORMALIZED YOLO format [x_center, y_center, width, height]
+
+YOLO FORMAT REQUIREMENTS:
+- All values must be normalized between 0.0 and 1.0
+- x_center: horizontal center position (0.0 = left edge, 1.0 = right edge)
+- y_center: vertical center position (0.0 = top edge, 1.0 = bottom edge)  
+- width: box width as fraction of image width
+- height: box height as fraction of image height
+- The box should tightly enclose the ENTIRE object
+
+Return ONLY valid JSON:
 ```json
 [
-  {
-    "label": "object_name",
-    "box": [x1, y1, x2, y2, x3, y3, x4, y4]
-  }
+  {"label": "object_type", "box": [x_center, y_center, width, height]}
 ]
 ```
 
-Be specific with labels and ensure all coordinates are in pixel values.
+Example: A dog in the center covering half the image would be:
+{"label": "dog", "box": [0.5, 0.5, 0.5, 0.5]}
