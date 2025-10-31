@@ -194,7 +194,12 @@ sudo service docker restart
 ### Step 5: Verify GPU Support in Docker
 
 ```bash
-docker run --rm --gpus all nvidia/cuda:11.8.0-base-ubuntu22.04 nvidia-smi
+## Run the docker test container
+```
+sudo docker run --gpus all --rm -it --ipc=host --ulimit memlock=-1 --ulimit stack=67108864 nvcr.io/nvidia/pytorch:21.10-py3
+python
+import torch
+torch.cuda.is_available()
 ```
 
 You should see your GPU information displayed.
