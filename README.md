@@ -22,13 +22,17 @@ First, find Python 3.11:
 ```
 which python3.11
 ```
-Install python 3.11 if is missing
+Install python 3.11 and virtual enviroment if is missing
 
 ```
-sudo add-apt-repository ppa:deadsnakes/ppa
 sudo apt update
-sudo apt install python3.11
 
+sudo add-apt-repository ppa:deadsnakes/ppa
+sudo apt install software-properties-common
+ 
+    
+sudo apt update
+sudo apt install python3.11 python3.11-venv python3.11-dev
 ```
 
 Check the Python
