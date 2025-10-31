@@ -1,0 +1,22 @@
+# CPU-Only Docker Compose Configuration
+# Use this with: docker-compose -f docker-compose.yml -f docker-compose.cpu.yml up -d
+
+version: '3.8'
+
+services:
+  ollama:
+    deploy: {}  # Remove GPU resources
+    environment:
+      - TZ=Europe/Warsaw
+      - OLLAMA_HOST=0.0.0.0:11434
+      - OLLAMA_NUM_GPU=0  # Force CPU mode
+
+  sam-service:
+    deploy: {}  # Remove GPU resources
+    environment:
+      - TZ=Europe/Warsaw
+      - SAM_MODEL_TYPE=vit_b  # Use smallest/fastest model for CPU
+      - FORCE_CPU=true
+
+  pipeline-api:
+    # No changes needed for pipeline-api
