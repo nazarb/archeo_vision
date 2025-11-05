@@ -99,7 +99,7 @@ class ArcheoVisionClient:
             response = requests.post(
                 f"{self.pipeline_url}/detect",
                 json=payload,
-                timeout=300
+                timeout=900
             )
             response.raise_for_status()
             return response.json()

@@ -284,7 +284,7 @@ def call_ollama_vision(image_base64: str, prompt: str, model: str) -> tuple[str,
         response = requests.post(
             f"{OLLAMA_URL}/api/generate",
             json=payload,
-            timeout=300
+            timeout=900
         )
         
         if response.status_code != 200:
@@ -315,7 +315,7 @@ def call_sam_service(image_base64: str, boxes: List[DetectionBox]) -> Dict[str, 
         response = requests.post(
             f"{SAM_URL}/segment",
             json=payload,
-            timeout=120
+            timeout=600
         )
         
         if response.status_code != 200:

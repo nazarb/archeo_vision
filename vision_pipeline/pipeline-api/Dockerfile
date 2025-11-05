@@ -29,5 +29,5 @@ COPY app.py /app/
 # Expose port
 EXPOSE 8080
 
-# Run the application
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8080"]
+# Run the application with extended timeouts for long-running vision model processing
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8080", "--timeout-keep-alive", "1200"]
