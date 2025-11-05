@@ -35,6 +35,8 @@ class DetectionRequest(BaseModel):
     image_base64: str
     prompt: str
     model: Optional[str] = None
+    original_width: Optional[int] = None
+    original_height: Optional[int] = None
 
 
 class DetectionResponse(BaseModel):
@@ -418,15 +420,26 @@ async def detect(request: DetectionRequest):
     Returns boxes with 4 points in pixel coordinates
     """
     try:
-        # Decode image to get dimensions
+        # Decode image to get resized dimensions
         import base64
         from PIL import Image
         import io
-        
+
         image_bytes = base64.b64decode(request.image_base64)
         image = Image.open(io.BytesIO(image_bytes))
-        image_width, image_height = image.size
-        
+        resized_width, resized_height = image.size
+
+        # Use original dimensions if provided, otherwise use resized dimensions
+        # Original dimensions are the target for coordinate scaling
+        target_width = request.original_width if request.original_width else resized_width
+        target_height = request.original_height if request.original_height else resized_height
+
+        if request.original_width and request.original_height:
+            logger.info(f"Original dimensions provided: {target_width}x{target_height}")
+            logger.info(f"Resized dimensions: {resized_width}x{resized_height}")
+        else:
+            logger.info(f"Using image dimensions: {target_width}x{target_height}")
+
         # Call Ollama
         model = request.model or DEFAULT_MODEL
         raw_response, model_used = call_ollama_vision(
@@ -434,16 +447,16 @@ async def detect(request: DetectionRequest):
             request.prompt,
             model
         )
-        
-        # Parse response
-        boxes = parse_qwen_response(raw_response, image_width, image_height)
-        
+
+        # Parse response - coordinates will be scaled to target dimensions
+        boxes = parse_qwen_response(raw_response, target_width, target_height)
+
         return DetectionResponse(
             success=True,
             raw_response=raw_response,
             boxes=boxes,
             count=len(boxes),
-            image_size={"width": image_width, "height": image_height},
+            image_size={"width": target_width, "height": target_height},
             model_used=model_used
         )
         

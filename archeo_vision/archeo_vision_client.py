@@ -68,29 +68,37 @@ class ArcheoVisionClient:
     def detect_pottery(self, image_path: Path, prompt: str) -> Dict[str, Any]:
         """Run pottery detection and OCR"""
         logger.info(f"Processing pottery image: {image_path.name}")
-        
-        # Load image to get dimensions
+
+        # Load image to get original dimensions
         image = cv2.imread(str(image_path))
         if image is None:
             logger.error(f"Failed to load image: {image_path}")
             return {"success": False, "error": "Failed to load image"}
 
-        image_height, image_width = image.shape[:2]
-        logger.info(f"Actual image dimensions: {image_width}x{image_height}")
+        original_height, original_width = image.shape[:2]
+        logger.info(f"Original image dimensions: {original_width}x{original_height}")
 
-        # Note: We no longer inject image dimensions into the prompt
-        # Instead, we ask Qwen to report the dimensions it perceives
-        # The server will then scale coordinates based on the difference
+        # Resize image to 1200x900 for detection
+        target_width = 1200
+        target_height = 900
+        resized_image = cv2.resize(image, (target_width, target_height), interpolation=cv2.INTER_AREA)
+        logger.info(f"Resized image to: {target_width}x{target_height}")
 
-        # Encode image
-        image_base64 = self.encode_image(image_path)
+        # Encode resized image to base64
+        _, buffer = cv2.imencode('.jpg', resized_image)
+        image_base64 = base64.b64encode(buffer).decode()
+
+        # Note: We send the resized image but pass original dimensions
+        # The server will scale coordinates from Qwen's reported dimensions to original dimensions
 
         # Prepare request
         payload = {
             "image_base64": image_base64,
-            "prompt": prompt
+            "prompt": prompt,
+            "original_width": original_width,
+            "original_height": original_height
         }
-        
+
         if self.model:
             payload["model"] = self.model
         

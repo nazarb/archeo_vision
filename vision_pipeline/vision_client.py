@@ -233,16 +233,34 @@ class VisionClient:
     def detect_image(self, image_path: Path, prompt: str) -> Dict[str, Any]:
         """Run detection on image"""
         logger.info(f"Detecting objects in {image_path.name}")
-        
-        # Encode image
-        image_base64 = self.encode_image(image_path)
-        
+
+        # Load image to get original dimensions
+        image = cv2.imread(str(image_path))
+        if image is None:
+            logger.error(f"Failed to load image: {image_path}")
+            return {"success": False, "error": "Failed to load image"}
+
+        original_height, original_width = image.shape[:2]
+        logger.info(f"Original image dimensions: {original_width}x{original_height}")
+
+        # Resize image to 1200x900 for detection
+        target_width = 1200
+        target_height = 900
+        resized_image = cv2.resize(image, (target_width, target_height), interpolation=cv2.INTER_AREA)
+        logger.info(f"Resized image to: {target_width}x{target_height}")
+
+        # Encode resized image to base64
+        _, buffer = cv2.imencode('.jpg', resized_image)
+        image_base64 = base64.b64encode(buffer).decode()
+
         # Prepare request
         payload = {
             "image_base64": image_base64,
-            "prompt": prompt
+            "prompt": prompt,
+            "original_width": original_width,
+            "original_height": original_height
         }
-        
+
         if self.model:
             payload["model"] = self.model
         
