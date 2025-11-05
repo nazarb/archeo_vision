@@ -116,13 +116,16 @@ def parse_qwen_response(response_text: str, image_width: int, image_height: int)
     """
     Parse Qwen/LLaVa response to extract boxes with 4 points
     Handles both normalized (0-1) YOLO format and pixel coordinates
+
+    NEW: Extracts Qwen's reported image dimensions and scales coordinates accordingly
+    If Qwen reports dimensions different from actual, coordinates are scaled to match actual dimensions
     """
     boxes = []
-    
+
     try:
         # Extract JSON from markdown if present
         json_text = extract_json_from_markdown(response_text)
-        
+
         # Try to parse as JSON
         try:
             data = json.loads(json_text)
@@ -143,7 +146,36 @@ def parse_qwen_response(response_text: str, image_width: int, image_height: int)
                     raise ValueError("No valid JSON found")
             else:
                 raise ValueError("No valid JSON structure found")
-        
+
+        # Extract Qwen's reported image dimensions for scaling
+        reported_width = image_width
+        reported_height = image_height
+        scale_x = 1.0
+        scale_y = 1.0
+
+        if isinstance(data, dict) and "image_size" in data:
+            try:
+                # Parse image_size field (format: "width, height" or "width,height")
+                image_size_str = str(data["image_size"]).strip()
+                if "," in image_size_str:
+                    parts = image_size_str.split(",")
+                    reported_width = int(parts[0].strip())
+                    reported_height = int(parts[1].strip())
+                elif "x" in image_size_str.lower():
+                    parts = image_size_str.lower().split("x")
+                    reported_width = int(parts[0].strip())
+                    reported_height = int(parts[1].strip())
+
+                # Calculate scaling factors
+                scale_x = image_width / reported_width
+                scale_y = image_height / reported_height
+
+                logger.info(f"Qwen reported dimensions: {reported_width}x{reported_height}")
+                logger.info(f"Actual image dimensions: {image_width}x{image_height}")
+                logger.info(f"Scaling factors: x={scale_x:.4f}, y={scale_y:.4f}")
+            except Exception as e:
+                logger.warning(f"Failed to parse image_size field: {e}, using 1:1 scaling")
+
         # Handle different response formats
         if isinstance(data, dict):
             # Check for pottery/annotations format
@@ -174,7 +206,7 @@ def parse_qwen_response(response_text: str, image_width: int, image_height: int)
             label = item.get("label", item.get("name", item.get("class", "object")))
             
             # Get box coordinates
-            box = item.get("box", item.get("bbox", item.get("bounding_box")))
+            box = item.get("box", item.get("bbox", item.get("bbox_2d", item.get("bounding_box"))))
             
             if not box or not isinstance(box, list):
                 continue
@@ -201,29 +233,33 @@ def parse_qwen_response(response_text: str, image_width: int, image_height: int)
                         y_min = box[1] * image_height
                         x_max = box[2] * image_width
                         y_max = box[3] * image_height
-                        
+
                         logger.info(f"Converted normalized corners: {box} -> pixels: [{x_min:.1f}, {y_min:.1f}, {x_max:.1f}, {y_max:.1f}]")
                     else:
                         # YOLO format: [x_center, y_center, width, height]
                         x_center, y_center, w, h = box
-                        
+
                         # Convert to pixel coordinates
                         x_center_px = x_center * image_width
                         y_center_px = y_center * image_height
                         w_px = w * image_width
                         h_px = h * image_height
-                        
+
                         # Convert to corner coordinates
                         x_min = x_center_px - w_px / 2
                         y_min = y_center_px - h_px / 2
                         x_max = x_center_px + w_px / 2
                         y_max = y_center_px + h_px / 2
-                        
+
                         logger.info(f"Converted YOLO format: {box} -> corners: [{x_min:.1f}, {y_min:.1f}, {x_max:.1f}, {y_max:.1f}]")
                 else:
                     # Corner format in pixels: [x_min, y_min, x_max, y_max]
-                    x_min, y_min, x_max, y_max = box
-                    logger.info(f"Using pixel corners: [{x_min:.1f}, {y_min:.1f}, {x_max:.1f}, {y_max:.1f}]")
+                    # Apply scaling if Qwen reported different dimensions
+                    x_min = box[0] * scale_x
+                    y_min = box[1] * scale_y
+                    x_max = box[2] * scale_x
+                    y_max = box[3] * scale_y
+                    logger.info(f"Using pixel corners with scaling: {box} -> [{x_min:.1f}, {y_min:.1f}, {x_max:.1f}, {y_max:.1f}]")
                 
                 # Create 4-point box from corners
                 boxes.append(DetectionBox(
@@ -248,7 +284,15 @@ def parse_qwen_response(response_text: str, image_width: int, image_height: int)
                         box[4] * image_width, box[5] * image_height,
                         box[6] * image_width, box[7] * image_height
                     ]
-                
+                else:
+                    # Apply scaling if Qwen reported different dimensions
+                    box = [
+                        box[0] * scale_x, box[1] * scale_y,
+                        box[2] * scale_x, box[3] * scale_y,
+                        box[4] * scale_x, box[5] * scale_y,
+                        box[6] * scale_x, box[7] * scale_y
+                    ]
+
                 boxes.append(DetectionBox(
                     x1=float(box[0]),
                     y1=float(box[1]),

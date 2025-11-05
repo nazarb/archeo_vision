@@ -74,21 +74,21 @@ class ArcheoVisionClient:
         if image is None:
             logger.error(f"Failed to load image: {image_path}")
             return {"success": False, "error": "Failed to load image"}
-        
+
         image_height, image_width = image.shape[:2]
-        logger.info(f"Image dimensions: {image_width}x{image_height}")
-        
-        # Inject image dimensions into prompt
-        prompt_with_dims = prompt.replace("{width}", str(image_width))
-        prompt_with_dims = prompt_with_dims.replace("{height}", str(image_height))
-        
+        logger.info(f"Actual image dimensions: {image_width}x{image_height}")
+
+        # Note: We no longer inject image dimensions into the prompt
+        # Instead, we ask Qwen to report the dimensions it perceives
+        # The server will then scale coordinates based on the difference
+
         # Encode image
         image_base64 = self.encode_image(image_path)
-        
+
         # Prepare request
         payload = {
             "image_base64": image_base64,
-            "prompt": prompt_with_dims
+            "prompt": prompt
         }
         
         if self.model:

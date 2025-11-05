@@ -1,18 +1,19 @@
-You are provided with an image of size {width} x {height} containing several pottery pieces and labels. The image also includes a yellow sticky note with a label and a scale bar for reference.
+You are provided with an image containing several pottery pieces and labels. The image also includes a yellow sticky note with a label and a scale bar for reference.
 
 Your task is to create a JSON file that includes the following information:
 
 1. The main label written on the yellow card (main_label)
-2. The actual image dimensions you are processing (image_size)
+2. The image dimensions as you perceive them (image_size) - IMPORTANT: report the width and height of the image as you see it
 3. Annotations for each pottery piece, including:
-   - Their bounding box coordinates in format [left, top, right, bottom] using PIXEL coordinates
+   - Their bounding box coordinates in format [left, top, right, bottom] using PIXEL coordinates RELATIVE to the image dimensions you reported
    - The label text written on each pottery piece
 
 CRITICAL REQUIREMENTS:
-- Use ABSOLUTE PIXEL coordinates (not normalized 0-1 values)
+- First, determine the image dimensions you are processing and include them in "image_size" field
+- Use ABSOLUTE PIXEL coordinates (not normalized 0-1 values) relative to YOUR PERCEIVED image dimensions
 - Format: [left, top, right, bottom]
 - Carefully read ALL text on pottery pieces
-- Include the image size you actually processed
+- Your coordinates must match the dimensions you report in image_size
 
 Return ONLY this exact JSON format:
 ```json
