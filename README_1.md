@@ -1,5 +1,5 @@
 Tested on Ubuntu. Version 1.00 with bugs 
-https://claude.ai/magic-link#e4b63aced6c678e6ca571902a999c9ce:bmF6YXIuYnVsYXdrYUBnbWFpbC5jb20=
+
 # Workflow
 
 1. Clone the Github repo
