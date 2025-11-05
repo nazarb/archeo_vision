@@ -104,10 +104,11 @@ class ArcheoVisionClient:
         
         # Call API
         try:
+            logger.info("Sending request to pipeline API (timeout: 1000s)")
             response = requests.post(
                 f"{self.pipeline_url}/detect",
                 json=payload,
-                timeout=300
+                timeout=1000  # ~17 minutes - sufficient for Qwen3-vl:8b vision processing
             )
             response.raise_for_status()
             return response.json()

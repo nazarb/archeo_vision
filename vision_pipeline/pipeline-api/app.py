@@ -3,6 +3,7 @@ import re
 import json
 import logging
 import base64
+import time
 from typing import List, Dict, Any, Optional
 import requests
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
@@ -318,27 +319,32 @@ def call_ollama_vision(image_base64: str, prompt: str, model: str) -> tuple[str,
     try:
         # Find available model
         model_to_use = find_qwen_model(model)
-        
+
         payload = {
             "model": model_to_use,
             "prompt": prompt,
             "images": [image_base64],
             "stream": False
         }
-        
+
         logger.info(f"Calling Ollama with model: {model_to_use}")
+        logger.info(f"Timeout set to 900 seconds (15 minutes)")
+
+        start_time = time.time()
         response = requests.post(
             f"{OLLAMA_URL}/api/generate",
             json=payload,
-            timeout=300
+            timeout=900  # 15 minutes for vision models
         )
-        
+        elapsed_time = time.time() - start_time
+        logger.info(f"Ollama response received in {elapsed_time:.2f} seconds")
+
         if response.status_code != 200:
             raise HTTPException(
                 status_code=response.status_code,
                 detail=f"Ollama error: {response.text}"
             )
-        
+
         result = response.json()
         return result.get("response", ""), model_to_use
         
@@ -361,7 +367,7 @@ def call_sam_service(image_base64: str, boxes: List[DetectionBox]) -> Dict[str, 
         response = requests.post(
             f"{SAM_URL}/segment",
             json=payload,
-            timeout=120
+            timeout=300  # 5 minutes for segmentation
         )
         
         if response.status_code != 200:
@@ -416,9 +422,10 @@ async def health():
 async def detect(request: DetectionRequest):
     """
     Detect objects using Qwen VL model
-    
+
     Returns boxes with 4 points in pixel coordinates
     """
+    start_time = time.time()
     try:
         # Decode image to get resized dimensions
         import base64
@@ -428,6 +435,8 @@ async def detect(request: DetectionRequest):
         image_bytes = base64.b64decode(request.image_base64)
         image = Image.open(io.BytesIO(image_bytes))
         resized_width, resized_height = image.size
+
+        logger.info(f"Starting detection - image size: {resized_width}x{resized_height}")
 
         # Use original dimensions if provided, otherwise use resized dimensions
         # Original dimensions are the target for coordinate scaling
@@ -450,6 +459,9 @@ async def detect(request: DetectionRequest):
 
         # Parse response - coordinates will be scaled to target dimensions
         boxes = parse_qwen_response(raw_response, target_width, target_height)
+
+        elapsed_time = time.time() - start_time
+        logger.info(f"Detection completed in {elapsed_time:.2f} seconds - found {len(boxes)} objects")
 
         return DetectionResponse(
             success=True,

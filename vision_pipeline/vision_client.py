@@ -266,10 +266,11 @@ class VisionClient:
         
         # Call API
         try:
+            logger.info("Sending request to pipeline API (timeout: 1000s)")
             response = requests.post(
                 f"{self.pipeline_url}/detect",
                 json=payload,
-                timeout=300
+                timeout=1000  # ~17 minutes - sufficient for Qwen3-vl:8b vision processing
             )
             response.raise_for_status()
             return response.json()
@@ -296,7 +297,7 @@ class VisionClient:
             response = requests.post(
                 f"{self.sam_url}/segment",
                 json=payload,
-                timeout=120
+                timeout=350  # ~6 minutes - buffer over API timeout
             )
             response.raise_for_status()
             return response.json()
