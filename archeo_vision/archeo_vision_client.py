@@ -101,7 +101,14 @@ class ArcheoVisionClient:
             padding_top = padding_needed // 2
             padding_bottom = padding_needed - padding_top
 
-            # Pad image with black pixels
+            # Generate random light color for padding (250-255 for each RGB channel)
+            padding_color = [
+                int(np.random.randint(250, 256)),
+                int(np.random.randint(250, 256)),
+                int(np.random.randint(250, 256))
+            ]
+
+            # Pad image with random light pixels
             padded_image = cv2.copyMakeBorder(
                 resized_image,
                 padding_top,
@@ -109,7 +116,7 @@ class ArcheoVisionClient:
                 0,
                 0,
                 cv2.BORDER_CONSTANT,
-                value=[0, 0, 0]
+                value=padding_color
             )
         elif padding_needed < 0:
             # Image is taller than target, crop from center
