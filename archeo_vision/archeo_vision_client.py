@@ -40,10 +40,11 @@ class ArcheoVisionClient:
         
         # Create output directories
         self.images_dir = self.shared_path / "images"
+        self.img_rescaled_dir = self.shared_path / "img_rescaled"
         self.results_dir = self.shared_path / "results"
         self.visualizations_dir = self.shared_path / "visualizations"
-        
-        for dir_path in [self.results_dir, self.visualizations_dir]:
+
+        for dir_path in [self.img_rescaled_dir, self.results_dir, self.visualizations_dir]:
             dir_path.mkdir(parents=True, exist_ok=True)
     
     def load_prompt(self) -> str:
@@ -64,36 +65,111 @@ class ArcheoVisionClient:
         """Encode image to base64"""
         with open(image_path, 'rb') as f:
             return base64.b64encode(f.read()).decode()
-    
-    def detect_pottery(self, image_path: Path, prompt: str) -> Dict[str, Any]:
-        """Run pottery detection and OCR"""
-        logger.info(f"Processing pottery image: {image_path.name}")
-        
-        # Load image to get dimensions
+
+    def rescale_and_pad_image(self, image_path: Path) -> tuple[Path, Dict[str, Any]]:
+        """
+        Rescale image to 1024px width and pad to make it square (1024x1024)
+
+        Returns:
+            tuple: (rescaled_image_path, rescaling_info)
+            rescaling_info contains: original_width, original_height, scale_factor,
+            padding_top, padding_bottom, target_size
+        """
+        # Load original image
         image = cv2.imread(str(image_path))
         if image is None:
-            logger.error(f"Failed to load image: {image_path}")
-            return {"success": False, "error": "Failed to load image"}
-        
-        image_height, image_width = image.shape[:2]
-        logger.info(f"Image dimensions: {image_width}x{image_height}")
-        
-        # Inject image dimensions into prompt
+            raise ValueError(f"Failed to load image: {image_path}")
+
+        original_height, original_width = image.shape[:2]
+        target_width = 1024
+
+        # Calculate scale factor to resize to 1024px width
+        scale_factor = target_width / original_width
+
+        # Calculate new height after scaling
+        scaled_height = int(original_height * scale_factor)
+
+        # Resize image to target width
+        resized_image = cv2.resize(image, (target_width, scaled_height), interpolation=cv2.INTER_LANCZOS4)
+
+        # Calculate padding needed to make it square (1024x1024)
+        target_size = 1024
+        padding_needed = target_size - scaled_height
+
+        if padding_needed > 0:
+            # Add padding to top and bottom
+            padding_top = padding_needed // 2
+            padding_bottom = padding_needed - padding_top
+
+            # Pad image with black pixels
+            padded_image = cv2.copyMakeBorder(
+                resized_image,
+                padding_top,
+                padding_bottom,
+                0,
+                0,
+                cv2.BORDER_CONSTANT,
+                value=[0, 0, 0]
+            )
+        elif padding_needed < 0:
+            # Image is taller than target, crop from center
+            crop_start = (-padding_needed) // 2
+            crop_end = crop_start + target_size
+            padded_image = resized_image[crop_start:crop_end, :]
+            padding_top = -crop_start
+            padding_bottom = scaled_height - crop_end
+        else:
+            # Image is already square
+            padded_image = resized_image
+            padding_top = 0
+            padding_bottom = 0
+
+        # Save rescaled image
+        rescaled_image_path = self.img_rescaled_dir / image_path.name
+        cv2.imwrite(str(rescaled_image_path), padded_image)
+        logger.info(f"Saved rescaled image: {rescaled_image_path}")
+
+        # Store rescaling information
+        rescaling_info = {
+            "original_width": original_width,
+            "original_height": original_height,
+            "scale_factor": scale_factor,
+            "padding_top": padding_top,
+            "padding_bottom": padding_bottom,
+            "target_size": target_size,
+            "scaled_height": scaled_height
+        }
+
+        logger.info(f"Rescaling info: original={original_width}x{original_height}, "
+                   f"scale={scale_factor:.3f}, padding_top={padding_top}, padding_bottom={padding_bottom}")
+
+        return rescaled_image_path, rescaling_info
+
+    def detect_pottery(self, image_path: Path, prompt: str, rescaling_info: Dict[str, Any]) -> Dict[str, Any]:
+        """Run pottery detection and OCR using rescaled image"""
+        logger.info(f"Processing pottery image: {image_path.name}")
+
+        # Use rescaled image dimensions (1024x1024)
+        image_width = rescaling_info["target_size"]
+        image_height = rescaling_info["target_size"]
+        logger.info(f"Rescaled image dimensions: {image_width}x{image_height}")
+
+        # Inject rescaled image dimensions into prompt
         prompt_with_dims = prompt.replace("{width}", str(image_width))
         prompt_with_dims = prompt_with_dims.replace("{height}", str(image_height))
-        
-        # Encode image
+
+        # Encode rescaled image
         image_base64 = self.encode_image(image_path)
-        
+
         # Prepare request
         payload = {
             "image_base64": image_base64,
             "prompt": prompt_with_dims
         }
-        
+
         if self.model:
             payload["model"] = self.model
-        
+
         # Call API
         try:
             response = requests.post(
@@ -102,16 +178,102 @@ class ArcheoVisionClient:
                 timeout=300
             )
             response.raise_for_status()
-            return response.json()
+            result = response.json()
+
+            # Attach rescaling info to result for later use
+            result["rescaling_info"] = rescaling_info
+
+            return result
         except requests.exceptions.RequestException as e:
             logger.error(f"Detection failed: {e}")
             return {"success": False, "error": str(e)}
-    
+
+    def reconstruct_bounding_boxes(self, boxes: List[Dict], rescaling_info: Dict[str, Any]) -> List[Dict]:
+        """
+        Reconstruct bounding boxes from rescaled coordinates to original image coordinates
+
+        Args:
+            boxes: List of bounding boxes from QWEN (in rescaled 1024x1024 coordinates)
+            rescaling_info: Dictionary containing rescaling parameters
+
+        Returns:
+            List of bounding boxes in original image coordinates
+        """
+        scale_factor = rescaling_info["scale_factor"]
+        padding_top = rescaling_info["padding_top"]
+        original_width = rescaling_info["original_width"]
+        original_height = rescaling_info["original_height"]
+
+        reconstructed_boxes = []
+
+        for box in boxes:
+            # Get coordinates from rescaled image (1024x1024)
+            x1, y1 = box.get("x1", 0), box.get("y1", 0)
+            x2, y2 = box.get("x2", 0), box.get("y2", 0)
+            x3, y3 = box.get("x3", 0), box.get("y3", 0)
+            x4, y4 = box.get("x4", 0), box.get("y4", 0)
+
+            # Step 1: Remove padding from y-coordinates
+            y1_unpadded = y1 - padding_top
+            y2_unpadded = y2 - padding_top
+            y3_unpadded = y3 - padding_top
+            y4_unpadded = y4 - padding_top
+
+            # Step 2: Scale back to original dimensions
+            x1_original = x1 / scale_factor
+            y1_original = y1_unpadded / scale_factor
+            x2_original = x2 / scale_factor
+            y2_original = y2_unpadded / scale_factor
+            x3_original = x3 / scale_factor
+            y3_original = y3_unpadded / scale_factor
+            x4_original = x4 / scale_factor
+            y4_original = y4_unpadded / scale_factor
+
+            # Clamp to original image boundaries
+            x1_original = max(0, min(x1_original, original_width))
+            x2_original = max(0, min(x2_original, original_width))
+            x3_original = max(0, min(x3_original, original_width))
+            x4_original = max(0, min(x4_original, original_width))
+            y1_original = max(0, min(y1_original, original_height))
+            y2_original = max(0, min(y2_original, original_height))
+            y3_original = max(0, min(y3_original, original_height))
+            y4_original = max(0, min(y4_original, original_height))
+
+            # Create reconstructed box
+            reconstructed_box = {
+                "x1": x1_original,
+                "y1": y1_original,
+                "x2": x2_original,
+                "y2": y2_original,
+                "x3": x3_original,
+                "y3": y3_original,
+                "x4": x4_original,
+                "y4": y4_original,
+                "label": box.get("label", "unknown")
+            }
+
+            reconstructed_boxes.append(reconstructed_box)
+
+        logger.info(f"Reconstructed {len(reconstructed_boxes)} bounding boxes to original coordinates")
+        return reconstructed_boxes
+
     def parse_pottery_response(self, detection_result: Dict, image_path: Path) -> Dict:
         """Parse detection result into pottery format"""
+        # Get rescaling info
+        rescaling_info = detection_result.get("rescaling_info", {})
+        original_width = rescaling_info.get("original_width", detection_result["image_size"]["width"])
+        original_height = rescaling_info.get("original_height", detection_result["image_size"]["height"])
+
+        # Reconstruct bounding boxes to original coordinates
+        boxes = detection_result.get("boxes", [])
+        if rescaling_info:
+            reconstructed_boxes = self.reconstruct_bounding_boxes(boxes, rescaling_info)
+        else:
+            reconstructed_boxes = boxes
+
         try:
             raw_response = detection_result.get("raw_response", "")
-            
+
             # Try to extract JSON from raw response
             import re
             json_match = re.search(r'```json\s*(.*?)\s*```', raw_response, re.DOTALL)
@@ -121,20 +283,41 @@ class ArcheoVisionClient:
             else:
                 # Try parsing the whole response as JSON
                 pottery_data = json.loads(raw_response)
-            
-            # Add image metadata
+
+            # If pottery_data contains annotations with bounding boxes, reconstruct them too
+            if "annotations" in pottery_data:
+                for annotation in pottery_data["annotations"]:
+                    if "bbox_2d" in annotation and rescaling_info:
+                        # Convert bbox_2d [x1, y1, x3, y3] to 4-point format
+                        bbox = annotation["bbox_2d"]
+                        temp_box = {
+                            "x1": bbox[0], "y1": bbox[1],
+                            "x2": bbox[2], "y2": bbox[1],
+                            "x3": bbox[2], "y3": bbox[3],
+                            "x4": bbox[0], "y4": bbox[3]
+                        }
+                        reconstructed = self.reconstruct_bounding_boxes([temp_box], rescaling_info)[0]
+                        annotation["bbox_2d"] = [
+                            int(reconstructed["x1"]),
+                            int(reconstructed["y1"]),
+                            int(reconstructed["x3"]),
+                            int(reconstructed["y3"])
+                        ]
+
+            # Add image metadata (use original dimensions)
             pottery_data["image_path"] = str(image_path)
-            pottery_data["image_width"] = detection_result["image_size"]["width"]
-            pottery_data["image_height"] = detection_result["image_size"]["height"]
-            
+            pottery_data["image_width"] = original_width
+            pottery_data["image_height"] = original_height
+            pottery_data["raw_response"] = raw_response
+
             return pottery_data
-            
+
         except Exception as e:
             logger.error(f"Failed to parse pottery response: {e}")
-            
-            # Fallback: use bounding boxes from detection
+
+            # Fallback: use reconstructed bounding boxes from detection
             annotations = []
-            for box in detection_result.get("boxes", []):
+            for box in reconstructed_boxes:
                 annotations.append({
                     "bbox_2d": [
                         int(box["x1"]),
@@ -144,12 +327,13 @@ class ArcheoVisionClient:
                     ],
                     "label": box.get("label", "unknown")
                 })
-            
+
             return {
                 "main_label": "unknown",
                 "image_path": str(image_path),
-                "image_width": detection_result["image_size"]["width"],
-                "image_height": detection_result["image_size"]["height"],
+                "image_width": original_width,
+                "image_height": original_height,
+                "raw_response": detection_result.get("raw_response", ""),
                 "annotations": annotations
             }
     
@@ -231,19 +415,26 @@ class ArcheoVisionClient:
         logger.info(f"\n{'='*60}")
         logger.info(f"Processing: {image_path.name}")
         logger.info(f"{'='*60}")
-        
+
         image_stem = image_path.stem
-        
-        # Run detection
-        detection_result = self.detect_pottery(image_path, prompt)
-        
+
+        # Step 1: Rescale and pad image to 1024x1024
+        try:
+            rescaled_image_path, rescaling_info = self.rescale_and_pad_image(image_path)
+        except Exception as e:
+            logger.error(f"Failed to rescale image: {e}")
+            return
+
+        # Step 2: Run detection on rescaled image
+        detection_result = self.detect_pottery(rescaled_image_path, prompt, rescaling_info)
+
         if not detection_result.get('success', False):
             logger.error(f"Detection failed: {detection_result.get('error', 'Unknown error')}")
             return
-        
+
         logger.info(f"Detected {detection_result.get('count', 0)} objects")
-        
-        # Parse into pottery format
+
+        # Step 3: Parse into pottery format (bounding boxes are reconstructed to original coordinates)
         pottery_data = self.parse_pottery_response(detection_result, image_path)
         
         # Save result JSON
