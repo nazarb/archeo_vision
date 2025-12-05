@@ -4,6 +4,7 @@ Archaeological Background Remover
 Removes backgrounds from archaeological artifact images for cleaner analysis and documentation
 
 Supports both local processing (rembg/grabcut) and GPU-accelerated Docker service.
+Includes scale bar overlay for archaeological documentation.
 """
 
 import os
@@ -13,10 +14,11 @@ import argparse
 import logging
 from pathlib import Path
 from typing import List, Tuple, Optional, Dict, Any
+from dataclasses import dataclass
 
 import cv2
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 import requests
 
 try:
@@ -30,6 +32,21 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ScaleBarConfig:
+    """Configuration for scale bar overlay"""
+    enabled: bool = False
+    length_cm: float = 5.0  # Length in centimeters
+    pixels_per_cm: float = 100.0  # Calibration: pixels per centimeter
+    position: str = "bottom-right"  # Position: bottom-left, bottom-right, top-left, top-right
+    color: Tuple[int, int, int, int] = (0, 0, 0, 255)  # RGBA color for bar
+    text_color: Tuple[int, int, int, int] = (0, 0, 0, 255)  # RGBA color for text
+    bar_height: int = 10  # Height of the scale bar in pixels
+    margin: int = 20  # Margin from image edge
+    show_text: bool = True  # Show measurement text
+    font_size: int = 24  # Font size for text
 
 
 class ArcheoBackgroundRemover:
@@ -51,7 +68,8 @@ class ArcheoBackgroundRemover:
         model_name: str = "u2net",
         alpha_matting: bool = False,
         background_color: Tuple[int, int, int, int] = (0, 0, 0, 0),
-        api_url: str = "http://localhost:8002"
+        api_url: str = "http://localhost:8002",
+        scale_bar: Optional[ScaleBarConfig] = None
     ):
         """
         Initialize the background remover.
@@ -63,6 +81,7 @@ class ArcheoBackgroundRemover:
             alpha_matting: Enable alpha matting for better edges (slower)
             background_color: RGBA color for background (default: transparent)
             api_url: URL of the rembg Docker service
+            scale_bar: Scale bar configuration (None to disable)
         """
         self.shared_path = Path(shared_path)
         self.method = method
@@ -70,6 +89,7 @@ class ArcheoBackgroundRemover:
         self.alpha_matting = alpha_matting
         self.background_color = background_color
         self.api_url = api_url
+        self.scale_bar = scale_bar or ScaleBarConfig()
 
         # Setup directories
         self.images_dir = self.shared_path / "images"
@@ -287,9 +307,135 @@ class ArcheoBackgroundRemover:
             logger.debug("Using GrabCut for background removal")
             return self.remove_background_grabcut(image)
 
+    def add_scale_bar(self, image: Image.Image) -> Image.Image:
+        """
+        Add a scale bar overlay to the image.
+
+        The scale bar is drawn based on the ScaleBarConfig settings.
+        Uses pixels_per_cm calibration to convert real-world measurements to pixels.
+
+        Args:
+            image: PIL Image to add scale bar to
+
+        Returns:
+            PIL Image with scale bar overlay
+        """
+        if not self.scale_bar.enabled:
+            return image
+
+        # Ensure image is RGBA for transparency support
+        if image.mode != 'RGBA':
+            image = image.convert('RGBA')
+
+        # Create a copy to draw on
+        result = image.copy()
+        draw = ImageDraw.Draw(result)
+
+        # Calculate scale bar dimensions
+        bar_length_px = int(self.scale_bar.length_cm * self.scale_bar.pixels_per_cm)
+        bar_height = self.scale_bar.bar_height
+        margin = self.scale_bar.margin
+
+        img_width, img_height = image.size
+
+        # Determine position
+        position = self.scale_bar.position.lower()
+
+        if position == "bottom-right":
+            x_start = img_width - margin - bar_length_px
+            y_start = img_height - margin - bar_height
+        elif position == "bottom-left":
+            x_start = margin
+            y_start = img_height - margin - bar_height
+        elif position == "top-right":
+            x_start = img_width - margin - bar_length_px
+            y_start = margin
+        elif position == "top-left":
+            x_start = margin
+            y_start = margin
+        else:
+            # Default to bottom-right
+            x_start = img_width - margin - bar_length_px
+            y_start = img_height - margin - bar_height
+
+        x_end = x_start + bar_length_px
+        y_end = y_start + bar_height
+
+        # Draw the scale bar (main rectangle)
+        draw.rectangle(
+            [x_start, y_start, x_end, y_end],
+            fill=self.scale_bar.color
+        )
+
+        # Draw end caps (vertical lines at each end)
+        cap_height = bar_height * 2
+        cap_y_start = y_start - (cap_height - bar_height) // 2
+        cap_y_end = cap_y_start + cap_height
+
+        # Left cap
+        draw.rectangle(
+            [x_start, cap_y_start, x_start + 2, cap_y_end],
+            fill=self.scale_bar.color
+        )
+
+        # Right cap
+        draw.rectangle(
+            [x_end - 2, cap_y_start, x_end, cap_y_end],
+            fill=self.scale_bar.color
+        )
+
+        # Add text label if enabled
+        if self.scale_bar.show_text:
+            # Format the measurement text
+            if self.scale_bar.length_cm >= 1:
+                text = f"{self.scale_bar.length_cm:.0f} cm"
+            else:
+                text = f"{self.scale_bar.length_cm * 10:.0f} mm"
+
+            # Try to load a font, fall back to default
+            try:
+                font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                                          self.scale_bar.font_size)
+            except (IOError, OSError):
+                try:
+                    font = ImageFont.truetype("/usr/share/fonts/TTF/DejaVuSans.ttf",
+                                              self.scale_bar.font_size)
+                except (IOError, OSError):
+                    try:
+                        font = ImageFont.truetype("arial.ttf", self.scale_bar.font_size)
+                    except (IOError, OSError):
+                        font = ImageFont.load_default()
+
+            # Get text bounding box
+            text_bbox = draw.textbbox((0, 0), text, font=font)
+            text_width = text_bbox[2] - text_bbox[0]
+            text_height = text_bbox[3] - text_bbox[1]
+
+            # Position text centered above or below the bar
+            text_x = x_start + (bar_length_px - text_width) // 2
+
+            if position.startswith("bottom"):
+                text_y = y_start - text_height - 5
+            else:
+                text_y = y_end + 5
+
+            # Draw text background for readability (semi-transparent white)
+            padding = 3
+            draw.rectangle(
+                [text_x - padding, text_y - padding,
+                 text_x + text_width + padding, text_y + text_height + padding],
+                fill=(255, 255, 255, 200)
+            )
+
+            # Draw text
+            draw.text((text_x, text_y), text, fill=self.scale_bar.text_color, font=font)
+
+        logger.debug(f"Added scale bar: {self.scale_bar.length_cm} cm at {position}")
+        return result
+
     def process_image(self, image_path: Path) -> Optional[Path]:
         """
-        Process a single image and remove its background.
+        Process a single image: remove background and optionally add scale bar.
 
         Args:
             image_path: Path to input image
@@ -313,6 +459,11 @@ class ArcheoBackgroundRemover:
 
             # Remove background
             result = self.remove_background(image)
+
+            # Add scale bar if enabled
+            if self.scale_bar.enabled:
+                result = self.add_scale_bar(result)
+                logger.info(f"  Added scale bar: {self.scale_bar.length_cm} cm")
 
             # Determine output path (always PNG for transparency support)
             output_filename = image_path.stem + "_no_bg.png"
@@ -441,6 +592,59 @@ def main():
         help="Background color: 'transparent', 'white', 'black', or R,G,B,A values"
     )
 
+    # Scale bar arguments
+    parser.add_argument(
+        "--scale-bar",
+        action="store_true",
+        help="Add a scale bar to processed images"
+    )
+    parser.add_argument(
+        "--scale-length",
+        type=float,
+        default=5.0,
+        help="Scale bar length in centimeters (default: 5.0)"
+    )
+    parser.add_argument(
+        "--scale-pixels-per-cm",
+        type=float,
+        default=100.0,
+        help="Calibration: pixels per centimeter (default: 100.0)"
+    )
+    parser.add_argument(
+        "--scale-position",
+        choices=["bottom-right", "bottom-left", "top-right", "top-left"],
+        default="bottom-right",
+        help="Scale bar position (default: bottom-right)"
+    )
+    parser.add_argument(
+        "--scale-color",
+        default="black",
+        help="Scale bar color: 'black', 'white', or R,G,B values (default: black)"
+    )
+    parser.add_argument(
+        "--scale-height",
+        type=int,
+        default=10,
+        help="Scale bar height in pixels (default: 10)"
+    )
+    parser.add_argument(
+        "--scale-margin",
+        type=int,
+        default=20,
+        help="Scale bar margin from edge in pixels (default: 20)"
+    )
+    parser.add_argument(
+        "--scale-no-text",
+        action="store_true",
+        help="Hide the measurement text label"
+    )
+    parser.add_argument(
+        "--scale-font-size",
+        type=int,
+        default=24,
+        help="Font size for scale bar text (default: 24)"
+    )
+
     args = parser.parse_args()
 
     # Parse background color
@@ -464,6 +668,39 @@ def main():
             logger.error("Use 'transparent', 'white', 'black', or R,G,B or R,G,B,A values")
             return
 
+    # Parse scale bar color
+    if args.scale_color == "black":
+        scale_color = (0, 0, 0, 255)
+    elif args.scale_color == "white":
+        scale_color = (255, 255, 255, 255)
+    else:
+        try:
+            parts = [int(x) for x in args.scale_color.split(",")]
+            if len(parts) == 3:
+                scale_color = tuple(parts) + (255,)
+            elif len(parts) == 4:
+                scale_color = tuple(parts)
+            else:
+                raise ValueError("Invalid color format")
+        except ValueError:
+            logger.error(f"Invalid scale bar color: {args.scale_color}")
+            logger.error("Use 'black', 'white', or R,G,B or R,G,B,A values")
+            return
+
+    # Create scale bar configuration
+    scale_bar_config = ScaleBarConfig(
+        enabled=args.scale_bar,
+        length_cm=args.scale_length,
+        pixels_per_cm=args.scale_pixels_per_cm,
+        position=args.scale_position,
+        color=scale_color,
+        text_color=scale_color,
+        bar_height=args.scale_height,
+        margin=args.scale_margin,
+        show_text=not args.scale_no_text,
+        font_size=args.scale_font_size
+    )
+
     # Create remover
     remover = ArcheoBackgroundRemover(
         shared_path=args.shared_path,
@@ -471,7 +708,8 @@ def main():
         model_name=args.model,
         alpha_matting=args.alpha_matting,
         background_color=bg_color,
-        api_url=args.api_url
+        api_url=args.api_url,
+        scale_bar=scale_bar_config
     )
 
     # Print header
@@ -486,6 +724,11 @@ def main():
         logger.info("Using: Local rembg (CPU)")
     else:
         logger.info("Using: OpenCV GrabCut fallback")
+
+    # Show scale bar info
+    if scale_bar_config.enabled:
+        logger.info(f"Scale bar: {scale_bar_config.length_cm} cm ({scale_bar_config.position})")
+        logger.info(f"  Calibration: {scale_bar_config.pixels_per_cm} pixels/cm")
 
     # Process
     if args.input:
