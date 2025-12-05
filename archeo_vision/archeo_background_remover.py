@@ -1,0 +1,408 @@
+#!/usr/bin/env python3
+"""
+Archaeological Background Remover
+Removes backgrounds from archaeological artifact images for cleaner analysis and documentation
+"""
+
+import os
+import argparse
+import logging
+from pathlib import Path
+from typing import List, Tuple, Optional
+
+import cv2
+import numpy as np
+from PIL import Image
+
+try:
+    from rembg import remove, new_session
+    REMBG_AVAILABLE = True
+except ImportError:
+    REMBG_AVAILABLE = False
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+
+class ArcheoBackgroundRemover:
+    """
+    Removes backgrounds from archaeological artifact images.
+
+    Supports multiple background removal methods:
+    - rembg: AI-based removal using U2Net (recommended)
+    - grabcut: OpenCV GrabCut algorithm (fallback)
+    """
+
+    SUPPORTED_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.bmp', '.webp']
+
+    def __init__(
+        self,
+        shared_path: str = "./archeo-shared",
+        method: str = "auto",
+        model_name: str = "u2net",
+        alpha_matting: bool = False,
+        background_color: Tuple[int, int, int, int] = (0, 0, 0, 0)
+    ):
+        """
+        Initialize the background remover.
+
+        Args:
+            shared_path: Path to shared directory containing images
+            method: Background removal method ('rembg', 'grabcut', or 'auto')
+            model_name: Model to use for rembg (u2net, u2netp, u2net_human_seg, etc.)
+            alpha_matting: Enable alpha matting for better edges (slower)
+            background_color: RGBA color for background (default: transparent)
+        """
+        self.shared_path = Path(shared_path)
+        self.method = method
+        self.model_name = model_name
+        self.alpha_matting = alpha_matting
+        self.background_color = background_color
+
+        # Setup directories
+        self.images_dir = self.shared_path / "images"
+        self.output_dir = self.shared_path / "no_background"
+
+        # Create output directory
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Initialize rembg session if available and needed
+        self.rembg_session = None
+        if self._should_use_rembg():
+            self._init_rembg_session()
+
+    def _should_use_rembg(self) -> bool:
+        """Check if rembg should be used"""
+        if self.method == "grabcut":
+            return False
+        if self.method == "rembg" and not REMBG_AVAILABLE:
+            logger.error("rembg requested but not installed. Install with: pip install rembg")
+            return False
+        return REMBG_AVAILABLE
+
+    def _init_rembg_session(self):
+        """Initialize rembg session for faster batch processing"""
+        try:
+            self.rembg_session = new_session(self.model_name)
+            logger.info(f"Initialized rembg session with model: {self.model_name}")
+        except Exception as e:
+            logger.warning(f"Failed to initialize rembg session: {e}")
+            self.rembg_session = None
+
+    def remove_background_rembg(self, image: Image.Image) -> Image.Image:
+        """
+        Remove background using rembg (U2Net model).
+
+        Args:
+            image: PIL Image to process
+
+        Returns:
+            PIL Image with transparent background
+        """
+        if not REMBG_AVAILABLE:
+            raise RuntimeError("rembg is not installed")
+
+        # Apply background removal
+        result = remove(
+            image,
+            session=self.rembg_session,
+            alpha_matting=self.alpha_matting,
+            alpha_matting_foreground_threshold=240,
+            alpha_matting_background_threshold=10,
+            alpha_matting_erode_size=10,
+            bgcolor=self.background_color
+        )
+
+        return result
+
+    def remove_background_grabcut(self, image: Image.Image, iterations: int = 5) -> Image.Image:
+        """
+        Remove background using OpenCV GrabCut algorithm.
+
+        This is a fallback method when rembg is not available.
+        Uses automatic rectangle detection based on image edges.
+
+        Args:
+            image: PIL Image to process
+            iterations: Number of GrabCut iterations
+
+        Returns:
+            PIL Image with transparent background
+        """
+        # Convert PIL to OpenCV format
+        cv_image = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+
+        # Create initial mask
+        mask = np.zeros(cv_image.shape[:2], np.uint8)
+
+        # Background and foreground models
+        bgd_model = np.zeros((1, 65), np.float64)
+        fgd_model = np.zeros((1, 65), np.float64)
+
+        # Auto-detect rectangle (exclude border pixels)
+        height, width = cv_image.shape[:2]
+        margin = int(min(width, height) * 0.02)  # 2% margin
+        rect = (margin, margin, width - 2 * margin, height - 2 * margin)
+
+        # Apply GrabCut
+        try:
+            cv2.grabCut(cv_image, mask, rect, bgd_model, fgd_model, iterations, cv2.GC_INIT_WITH_RECT)
+        except cv2.error as e:
+            logger.warning(f"GrabCut failed: {e}, returning original image")
+            return image.convert('RGBA')
+
+        # Create binary mask (foreground = 1 or 3)
+        mask2 = np.where((mask == 2) | (mask == 0), 0, 1).astype('uint8')
+
+        # Apply mask to create RGBA image
+        result = cv_image * mask2[:, :, np.newaxis]
+
+        # Convert to RGBA with alpha channel
+        result_rgba = cv2.cvtColor(result, cv2.COLOR_BGR2RGBA)
+        result_rgba[:, :, 3] = mask2 * 255
+
+        # Convert back to PIL
+        return Image.fromarray(result_rgba)
+
+    def remove_background(self, image: Image.Image) -> Image.Image:
+        """
+        Remove background using the configured method.
+
+        Args:
+            image: PIL Image to process
+
+        Returns:
+            PIL Image with background removed
+        """
+        # Determine method to use
+        use_rembg = self._should_use_rembg()
+
+        if use_rembg:
+            logger.debug("Using rembg for background removal")
+            return self.remove_background_rembg(image)
+        else:
+            logger.debug("Using GrabCut for background removal")
+            return self.remove_background_grabcut(image)
+
+    def process_image(self, image_path: Path) -> Optional[Path]:
+        """
+        Process a single image and remove its background.
+
+        Args:
+            image_path: Path to input image
+
+        Returns:
+            Path to output image, or None if processing failed
+        """
+        logger.info(f"Processing: {image_path.name}")
+
+        try:
+            # Load image
+            image = Image.open(image_path)
+
+            # Convert to RGB if necessary (handle grayscale, RGBA, etc.)
+            if image.mode not in ('RGB', 'RGBA'):
+                image = image.convert('RGB')
+
+            # Get original dimensions for logging
+            original_size = image.size
+            logger.info(f"  Image size: {original_size[0]}x{original_size[1]}")
+
+            # Remove background
+            result = self.remove_background(image)
+
+            # Determine output path (always PNG for transparency support)
+            output_filename = image_path.stem + "_no_bg.png"
+            output_path = self.output_dir / output_filename
+
+            # Save result
+            result.save(output_path, "PNG")
+            logger.info(f"  Saved: {output_path.name}")
+
+            return output_path
+
+        except Exception as e:
+            logger.error(f"  Failed to process {image_path.name}: {e}")
+            return None
+
+    def process_all_images(self) -> Tuple[int, int]:
+        """
+        Process all images in the images directory.
+
+        Returns:
+            Tuple of (success_count, total_count)
+        """
+        # Find all images
+        image_files = []
+        for ext in self.SUPPORTED_EXTENSIONS:
+            image_files.extend(self.images_dir.glob(f"*{ext}"))
+            image_files.extend(self.images_dir.glob(f"*{ext.upper()}"))
+
+        # Remove duplicates and sort
+        image_files = sorted(set(image_files))
+
+        if not image_files:
+            logger.warning(f"No images found in {self.images_dir}")
+            return 0, 0
+
+        logger.info(f"Found {len(image_files)} images to process")
+        logger.info(f"Output directory: {self.output_dir}")
+        logger.info(f"Method: {'rembg' if self._should_use_rembg() else 'grabcut'}")
+
+        # Process each image
+        success_count = 0
+        for i, image_path in enumerate(image_files, 1):
+            logger.info(f"\n[{i}/{len(image_files)}] Processing {image_path.name}")
+
+            result = self.process_image(image_path)
+            if result:
+                success_count += 1
+
+        return success_count, len(image_files)
+
+    def process_single(self, input_path: str, output_path: Optional[str] = None) -> Optional[Path]:
+        """
+        Process a single image file.
+
+        Args:
+            input_path: Path to input image
+            output_path: Optional custom output path
+
+        Returns:
+            Path to output image, or None if processing failed
+        """
+        input_path = Path(input_path)
+
+        if not input_path.exists():
+            logger.error(f"Input file not found: {input_path}")
+            return None
+
+        # Process the image
+        result = self.process_image(input_path)
+
+        # Move to custom output path if specified
+        if result and output_path:
+            output_path = Path(output_path)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            result.rename(output_path)
+            logger.info(f"Moved output to: {output_path}")
+            return output_path
+
+        return result
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Archaeological Background Remover - Remove backgrounds from artifact images"
+    )
+    parser.add_argument(
+        "--shared-path",
+        default="./archeo-shared",
+        help="Shared folder path (default: ./archeo-shared)"
+    )
+    parser.add_argument(
+        "--input",
+        "-i",
+        help="Single input image path (processes one file instead of batch)"
+    )
+    parser.add_argument(
+        "--output",
+        "-o",
+        help="Output path for single image processing"
+    )
+    parser.add_argument(
+        "--method",
+        choices=["auto", "rembg", "grabcut"],
+        default="auto",
+        help="Background removal method (default: auto)"
+    )
+    parser.add_argument(
+        "--model",
+        default="u2net",
+        choices=["u2net", "u2netp", "u2net_human_seg", "u2net_cloth_seg", "silueta", "isnet-general-use"],
+        help="Model for rembg (default: u2net)"
+    )
+    parser.add_argument(
+        "--alpha-matting",
+        action="store_true",
+        help="Enable alpha matting for better edges (slower)"
+    )
+    parser.add_argument(
+        "--bg-color",
+        default="transparent",
+        help="Background color: 'transparent', 'white', 'black', or R,G,B,A values"
+    )
+
+    args = parser.parse_args()
+
+    # Parse background color
+    if args.bg_color == "transparent":
+        bg_color = (0, 0, 0, 0)
+    elif args.bg_color == "white":
+        bg_color = (255, 255, 255, 255)
+    elif args.bg_color == "black":
+        bg_color = (0, 0, 0, 255)
+    else:
+        try:
+            parts = [int(x) for x in args.bg_color.split(",")]
+            if len(parts) == 3:
+                bg_color = tuple(parts) + (255,)
+            elif len(parts) == 4:
+                bg_color = tuple(parts)
+            else:
+                raise ValueError("Invalid color format")
+        except ValueError:
+            logger.error(f"Invalid background color: {args.bg_color}")
+            logger.error("Use 'transparent', 'white', 'black', or R,G,B or R,G,B,A values")
+            return
+
+    # Create remover
+    remover = ArcheoBackgroundRemover(
+        shared_path=args.shared_path,
+        method=args.method,
+        model_name=args.model,
+        alpha_matting=args.alpha_matting,
+        background_color=bg_color
+    )
+
+    # Print header
+    logger.info("\n" + "=" * 60)
+    logger.info("Archaeological Background Remover")
+    logger.info("=" * 60)
+
+    if not REMBG_AVAILABLE and args.method != "grabcut":
+        logger.warning("\nrembg not installed. Using GrabCut fallback.")
+        logger.warning("For best results, install rembg: pip install rembg")
+
+    # Process
+    if args.input:
+        # Single image mode
+        logger.info(f"\nProcessing single image: {args.input}")
+        result = remover.process_single(args.input, args.output)
+
+        if result:
+            logger.info(f"\nBackground removed successfully!")
+            logger.info(f"Output: {result}")
+        else:
+            logger.error("\nFailed to process image")
+    else:
+        # Batch mode
+        logger.info(f"\nBatch processing images from: {remover.images_dir}")
+
+        success_count, total_count = remover.process_all_images()
+
+        # Summary
+        logger.info("\n" + "=" * 60)
+        logger.info(f"Processing complete: {success_count}/{total_count} successful")
+        logger.info("=" * 60)
+
+        if success_count > 0:
+            logger.info(f"\nOutput files saved to: {remover.output_dir}")
+            logger.info("All output images are PNG format with transparency support")
+
+
+if __name__ == "__main__":
+    main()
