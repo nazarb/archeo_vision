@@ -41,16 +41,16 @@ logger = logging.getLogger(__name__)
 class ArtifactMeasurement:
     """Measurement results from Ollama vision analysis"""
     success: bool = False
-    # Scale ruler detection
+    # Scale bar detection
     scale_detected: bool = False
-    scale_length_cm: float = 0.0  # Real-world length shown on ruler
-    scale_length_pixels: float = 0.0  # Pixel length of ruler in image
-    pixels_per_cm: float = 0.0  # Calculated calibration
-    # Artifact measurements
+    scale_bar_length_cm: float = 0.0  # Length of the scale bar in cm
+    # Image measurements in cm (from LLM using scale bar)
+    image_longest_side_cm: float = 0.0  # Longest side of the image in cm
+    # Artifact measurements in cm
     artifact_length_cm: float = 0.0
     artifact_width_cm: float = 0.0
-    artifact_length_pixels: float = 0.0
-    artifact_width_pixels: float = 0.0
+    # Calculated calibration (computed outside LLM)
+    pixels_per_cm: float = 0.0
     # Raw response for debugging
     raw_response: str = ""
     error: str = ""
@@ -95,7 +95,7 @@ class ArcheoBackgroundRemover:
         api_url: str = "http://localhost:8002",
         scale_bar: Optional[ScaleBarConfig] = None,
         pipeline_url: str = "http://localhost:8080",
-        vision_model: str = "qwen2.5vl:72b"
+        vision_model: str = "gemma3:27b"
     ):
         """
         Initialize the background remover.
@@ -109,7 +109,7 @@ class ArcheoBackgroundRemover:
             api_url: URL of the rembg Docker service
             scale_bar: Scale bar configuration (None to disable)
             pipeline_url: URL of the vision pipeline API for Ollama (for auto-calibration)
-            vision_model: Ollama vision model for measurements (default: qwen2.5vl:72b)
+            vision_model: Ollama vision model for measurements (default: gemma3:27b)
         """
         self.shared_path = Path(shared_path)
         self.method = method
@@ -122,7 +122,7 @@ class ArcheoBackgroundRemover:
         self.vision_model = vision_model
 
         # Setup directories
-        self.images_dir = self.shared_path / "images"
+        self.images_dir = self.shared_path / "Final"
         self.output_dir = self.shared_path / "no_background"
         self.measurements_dir = self.shared_path / "measurements"
 
@@ -212,18 +212,17 @@ class ArcheoBackgroundRemover:
 
     def measure_artifact(self, image_path: Path) -> ArtifactMeasurement:
         """
-        Use Ollama vision model to detect scale ruler and measure artifact.
+        Use Ollama vision model to detect scale bar and measure artifact in centimeters.
 
-        Analyzes the image to:
-        1. Find the scale/ruler in the image
-        2. Read the scale markings to determine pixels-per-cm calibration
-        3. Measure the artifact's length and width
+        The LLM only provides measurements in cm using the visible scale bar.
+        We then calculate pixels_per_cm by comparing the LLM's longest_side_cm
+        with the actual image dimensions in pixels.
 
         Args:
             image_path: Path to the image file
 
         Returns:
-            ArtifactMeasurement with scale calibration and artifact dimensions
+            ArtifactMeasurement with cm measurements and calculated pixels_per_cm
         """
         logger.info(f"Measuring artifact in: {image_path.name}")
 
@@ -236,69 +235,58 @@ class ArcheoBackgroundRemover:
             )
 
         image_height, image_width = image.shape[:2]
+        longest_side_pixels = max(image_width, image_height)
 
         # Encode image for API
         image_base64 = self.encode_image_file(image_path)
 
-        # Craft the measurement prompt - optimized for Qwen2.5-VL 72B precision
-        measurement_prompt = f"""You are an expert archaeological measurement system. Analyze this photograph with EXTREME PRECISION.
+        # Simplified measurement prompt - only ask for CM values, not pixels
+        measurement_prompt = """You are an expert archaeological measurement system.
 
-IMAGE DIMENSIONS: {image_width} x {image_height} pixels
+## TASK: Measure this image using the visible scale bar
 
-## CRITICAL MEASUREMENT TASK
+### Step 1: FIND THE SCALE BAR
+Look for the scale bar/ruler on the LEFT, BOTTOM, or RIGHT side of the artifact.
+Identify what length the scale bar represents (e.g., 5cm, 10cm, 15cm).
 
-### Step 1: SCALE RULER DETECTION
-Carefully locate the measuring scale/ruler in the image. Common locations: bottom edge, right side, or next to the artifact.
-- Identify the START POINT (0 mark) pixel coordinates
-- Identify the END POINT pixel coordinates
-- Read the measurement markings to determine the REAL LENGTH in centimeters
-- Calculate the pixel distance between start and end points
+### Step 2: MEASURE THE IMAGE
+Using the scale bar as your reference, measure:
+- The LONGEST SIDE of the entire image in centimeters
+- This is the full width OR height of the photo (whichever is larger)
 
-### Step 2: ARTIFACT MEASUREMENT
-Identify the main archaeological artifact and measure:
-- BOUNDING BOX: Find the extreme points (leftmost, rightmost, topmost, bottommost pixels)
-- LENGTH: Maximum horizontal extent in pixels (rightmost_x - leftmost_x)
-- WIDTH: Maximum vertical extent in pixels (bottommost_y - topmost_y)
-- Note: If artifact is rotated, measure along the longest axis for length
-
-### Step 3: PRECISION CALCULATIONS
-- Use the scale ruler to calculate PIXELS PER CENTIMETER
-- Convert artifact pixel measurements to real-world centimeters
+### Step 3: MEASURE THE ARTIFACT
+Using the scale bar, measure the archaeological artifact:
+- LENGTH: The longest dimension of the artifact in centimeters
+- WIDTH: The perpendicular dimension of the artifact in centimeters
 
 ## OUTPUT FORMAT (JSON only, no other text)
 ```json
-{{
-  "scale_ruler": {{
+{
+  "scale_bar": {
     "detected": true,
-    "start_x": 100,
-    "start_y": 950,
-    "end_x": 600,
-    "end_y": 950,
     "length_cm": 10.0,
-    "length_pixels": 500,
-    "pixels_per_cm": 50.0,
-    "description": "10cm ruler along bottom edge"
-  }},
-  "artifact": {{
+    "position": "left",
+    "description": "10cm scale bar on the left side"
+  },
+  "image": {
+    "longest_side_cm": 25.5,
+    "orientation": "horizontal"
+  },
+  "artifact": {
     "detected": true,
-    "bbox": {{
-      "left": 150,
-      "top": 100,
-      "right": 850,
-      "bottom": 600
-    }},
-    "length_pixels": 700,
-    "width_pixels": 500,
-    "description": "ceramic pottery fragment, roughly oval shape"
-  }}
-}}
+    "length_cm": 12.3,
+    "width_cm": 8.7,
+    "description": "ceramic pottery fragment"
+  }
+}
 ```
 
 IMPORTANT:
-- Be PRECISE with pixel coordinates - examine the image carefully
-- If ruler shows millimeters, convert to centimeters (10mm = 1cm)
-- If scale is partially visible, estimate the full length based on visible markings
-- Set "detected": false if you cannot find the scale ruler"""
+- All measurements must be in CENTIMETERS only
+- Do NOT report pixel values - only centimeter measurements
+- Use the scale bar markings to measure accurately
+- If scale shows millimeters, convert to centimeters (10mm = 1cm)
+- Set "detected": false if you cannot find the scale bar"""
 
         # Call the pipeline API
         try:
@@ -323,9 +311,9 @@ IMPORTANT:
                     raw_response=result.get("raw_response", "")
                 )
 
-            # Parse the response
+            # Parse the response and calculate pixels_per_cm
             raw_response = result.get("raw_response", "")
-            return self._parse_measurement_response(raw_response, image_width, image_height)
+            return self._parse_measurement_response(raw_response, longest_side_pixels)
 
         except requests.exceptions.RequestException as e:
             logger.error(f"Measurement API request failed: {e}")
@@ -337,10 +325,14 @@ IMPORTANT:
     def _parse_measurement_response(
         self,
         raw_response: str,
-        image_width: int,
-        image_height: int
+        longest_side_pixels: int
     ) -> ArtifactMeasurement:
-        """Parse the Ollama response to extract measurements"""
+        """
+        Parse the Ollama response and calculate pixels_per_cm.
+
+        The LLM provides measurements in cm only. We calculate pixels_per_cm by:
+        pixels_per_cm = longest_side_pixels / longest_side_cm
+        """
         measurement = ArtifactMeasurement(raw_response=raw_response)
 
         try:
@@ -359,55 +351,33 @@ IMPORTANT:
 
             data = json.loads(json_str)
 
-            # Parse scale ruler data
-            scale_data = data.get("scale_ruler", {})
+            # Parse scale bar data
+            scale_data = data.get("scale_bar", {})
             if scale_data.get("detected", False):
                 measurement.scale_detected = True
-                measurement.scale_length_cm = float(scale_data.get("length_cm", 0))
-                measurement.scale_length_pixels = float(scale_data.get("length_pixels", 0))
+                measurement.scale_bar_length_cm = float(scale_data.get("length_cm", 0))
 
-                # Use model-provided pixels_per_cm if available, otherwise calculate
-                if "pixels_per_cm" in scale_data and scale_data["pixels_per_cm"] > 0:
-                    measurement.pixels_per_cm = float(scale_data["pixels_per_cm"])
-                elif measurement.scale_length_cm > 0 and measurement.scale_length_pixels > 0:
-                    measurement.pixels_per_cm = (
-                        measurement.scale_length_pixels / measurement.scale_length_cm
-                    )
+            # Parse image measurements
+            image_data = data.get("image", {})
+            measurement.image_longest_side_cm = float(image_data.get("longest_side_cm", 0))
 
-            # Parse artifact data
+            # Calculate pixels_per_cm using actual image dimensions
+            if measurement.image_longest_side_cm > 0:
+                measurement.pixels_per_cm = longest_side_pixels / measurement.image_longest_side_cm
+                logger.info(f"  Image longest side: {measurement.image_longest_side_cm:.1f} cm = {longest_side_pixels} px")
+                logger.info(f"  Calculated: {measurement.pixels_per_cm:.1f} pixels/cm")
+            else:
+                measurement.error = "LLM did not provide image longest side measurement"
+                return measurement
+
+            # Parse artifact data (already in cm from LLM)
             artifact_data = data.get("artifact", {})
             if artifact_data.get("detected", False):
-                # Handle both direct and bbox formats
-                if "bbox" in artifact_data:
-                    bbox = artifact_data["bbox"]
-                    measurement.artifact_length_pixels = float(
-                        bbox.get("right", 0) - bbox.get("left", 0)
-                    )
-                    measurement.artifact_width_pixels = float(
-                        bbox.get("bottom", 0) - bbox.get("top", 0)
-                    )
-                else:
-                    measurement.artifact_length_pixels = float(
-                        artifact_data.get("length_pixels", 0)
-                    )
-                    measurement.artifact_width_pixels = float(
-                        artifact_data.get("width_pixels", 0)
-                    )
-
-                # Calculate real-world dimensions if we have calibration
-                if measurement.pixels_per_cm > 0:
-                    measurement.artifact_length_cm = (
-                        measurement.artifact_length_pixels / measurement.pixels_per_cm
-                    )
-                    measurement.artifact_width_cm = (
-                        measurement.artifact_width_pixels / measurement.pixels_per_cm
-                    )
-
-            measurement.success = measurement.scale_detected
-            logger.info(f"  Scale: {measurement.scale_length_cm} cm = {measurement.scale_length_pixels:.0f} px")
-            logger.info(f"  Calibration: {measurement.pixels_per_cm:.1f} pixels/cm")
-            if measurement.artifact_length_cm > 0:
+                measurement.artifact_length_cm = float(artifact_data.get("length_cm", 0))
+                measurement.artifact_width_cm = float(artifact_data.get("width_cm", 0))
                 logger.info(f"  Artifact: {measurement.artifact_length_cm:.1f} x {measurement.artifact_width_cm:.1f} cm")
+
+            measurement.success = measurement.scale_detected and measurement.pixels_per_cm > 0
 
         except json.JSONDecodeError as e:
             measurement.error = f"JSON parse error: {e}"
@@ -742,7 +712,7 @@ IMPORTANT:
                 measurement = self.measure_artifact(image_path)
 
                 if measurement.success and measurement.pixels_per_cm > 0:
-                    # Update scale bar config with detected calibration
+                    # Update scale bar config with calculated calibration
                     self.scale_bar.pixels_per_cm = measurement.pixels_per_cm
                     self.scale_bar.enabled = True
                     logger.info(f"  Auto-calibrated: {measurement.pixels_per_cm:.1f} px/cm")
@@ -752,13 +722,11 @@ IMPORTANT:
                     measurement_data = {
                         "image": image_path.name,
                         "scale_detected": measurement.scale_detected,
-                        "scale_length_cm": measurement.scale_length_cm,
-                        "scale_length_pixels": measurement.scale_length_pixels,
+                        "scale_bar_length_cm": measurement.scale_bar_length_cm,
+                        "image_longest_side_cm": measurement.image_longest_side_cm,
                         "pixels_per_cm": measurement.pixels_per_cm,
                         "artifact_length_cm": measurement.artifact_length_cm,
-                        "artifact_width_cm": measurement.artifact_width_cm,
-                        "artifact_length_pixels": measurement.artifact_length_pixels,
-                        "artifact_width_pixels": measurement.artifact_width_pixels
+                        "artifact_width_cm": measurement.artifact_width_cm
                     }
                     with open(measurement_file, 'w') as f:
                         json.dump(measurement_data, f, indent=2)
@@ -983,17 +951,23 @@ def main():
     )
     parser.add_argument(
         "--vision-model",
-        default="qwen2.5vl:72b",
-        help="""Ollama VISION model for measurements. Must be a VL (Vision-Language) model.
+        default="gemma3:27b",
+        help="""Ollama VISION model for measurements. Must be a vision-capable model.
                 Recommended models by VRAM:
-                - qwen2.5vl:72b (45GB+ VRAM, best accuracy) [DEFAULT for L40S/A100]
-                - qwen2.5vl:72b-q4_K_M (40GB VRAM, quantized)
-                - minicpm-v:8b (8GB VRAM, excellent accuracy)
+                HIGH VRAM (40GB+):
+                - qwen2.5vl:72b (45GB+ VRAM, best accuracy)
+                MEDIUM VRAM (16-24GB):
+                - gemma3:27b (17GB VRAM, excellent) [DEFAULT]
+                - mistral-small3.1 (24GB VRAM, excellent vision)
                 - qwen2.5vl:32b (20GB VRAM, very good)
-                - qwen2.5vl:7b (6GB VRAM, good)
                 - llava:34b (20GB VRAM)
-                - llava:13b (10GB VRAM)
-                NOTE: Text-only models (ERNIE, Llama, etc.) will NOT work!"""
+                LOW VRAM (6-10GB):
+                - gemma3:12b (8GB VRAM, very good)
+                - minicpm-v:8b (8GB VRAM, good)
+                - deepseek-vl:7b (7GB VRAM, good)
+                - qwen2.5vl:7b (6GB VRAM, good)
+                - gemma3:4b (4GB VRAM, basic)
+                NOTE: Text-only models (ERNIE, Llama-text, etc.) will NOT work!"""
     )
 
     args = parser.parse_args()
