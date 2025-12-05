@@ -5,16 +5,19 @@ Removes backgrounds from archaeological artifact images for cleaner analysis and
 
 Supports both local processing (rembg/grabcut) and GPU-accelerated Docker service.
 Includes scale bar overlay for archaeological documentation.
+Uses Ollama vision models to automatically detect scale rulers and measure artifacts.
 """
 
 import os
 import io
+import re
+import json
 import base64
 import argparse
 import logging
 from pathlib import Path
 from typing import List, Tuple, Optional, Dict, Any
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import cv2
 import numpy as np
@@ -35,6 +38,25 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
+class ArtifactMeasurement:
+    """Measurement results from Ollama vision analysis"""
+    success: bool = False
+    # Scale ruler detection
+    scale_detected: bool = False
+    scale_length_cm: float = 0.0  # Real-world length shown on ruler
+    scale_length_pixels: float = 0.0  # Pixel length of ruler in image
+    pixels_per_cm: float = 0.0  # Calculated calibration
+    # Artifact measurements
+    artifact_length_cm: float = 0.0
+    artifact_width_cm: float = 0.0
+    artifact_length_pixels: float = 0.0
+    artifact_width_pixels: float = 0.0
+    # Raw response for debugging
+    raw_response: str = ""
+    error: str = ""
+
+
+@dataclass
 class ScaleBarConfig:
     """Configuration for scale bar overlay"""
     enabled: bool = False
@@ -47,6 +69,8 @@ class ScaleBarConfig:
     margin: int = 20  # Margin from image edge
     show_text: bool = True  # Show measurement text
     font_size: int = 24  # Font size for text
+    auto_calibrate: bool = False  # Auto-detect scale from image using Ollama
+    show_artifact_dimensions: bool = False  # Show artifact L x W on image
 
 
 class ArcheoBackgroundRemover:
@@ -69,7 +93,9 @@ class ArcheoBackgroundRemover:
         alpha_matting: bool = False,
         background_color: Tuple[int, int, int, int] = (0, 0, 0, 0),
         api_url: str = "http://localhost:8002",
-        scale_bar: Optional[ScaleBarConfig] = None
+        scale_bar: Optional[ScaleBarConfig] = None,
+        pipeline_url: str = "http://localhost:8080",
+        vision_model: str = "qwen2.5-vl:7b"
     ):
         """
         Initialize the background remover.
@@ -82,6 +108,8 @@ class ArcheoBackgroundRemover:
             background_color: RGBA color for background (default: transparent)
             api_url: URL of the rembg Docker service
             scale_bar: Scale bar configuration (None to disable)
+            pipeline_url: URL of the vision pipeline API for Ollama (for auto-calibration)
+            vision_model: Ollama vision model for measurements (default: qwen2.5-vl:7b)
         """
         self.shared_path = Path(shared_path)
         self.method = method
@@ -90,13 +118,18 @@ class ArcheoBackgroundRemover:
         self.background_color = background_color
         self.api_url = api_url
         self.scale_bar = scale_bar or ScaleBarConfig()
+        self.pipeline_url = pipeline_url
+        self.vision_model = vision_model
 
         # Setup directories
         self.images_dir = self.shared_path / "images"
         self.output_dir = self.shared_path / "no_background"
+        self.measurements_dir = self.shared_path / "measurements"
 
-        # Create output directory
+        # Create output directories
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        if self.scale_bar.auto_calibrate:
+            self.measurements_dir.mkdir(parents=True, exist_ok=True)
 
         # Initialize rembg session if needed for local processing
         self.rembg_session = None
@@ -171,6 +204,178 @@ class ArcheoBackgroundRemover:
         """Decode base64 string to PIL Image"""
         image_bytes = base64.b64decode(image_base64)
         return Image.open(io.BytesIO(image_bytes))
+
+    def encode_image_file(self, image_path: Path) -> str:
+        """Encode image file to base64 string"""
+        with open(image_path, 'rb') as f:
+            return base64.b64encode(f.read()).decode()
+
+    def measure_artifact(self, image_path: Path) -> ArtifactMeasurement:
+        """
+        Use Ollama vision model to detect scale ruler and measure artifact.
+
+        Analyzes the image to:
+        1. Find the scale/ruler in the image
+        2. Read the scale markings to determine pixels-per-cm calibration
+        3. Measure the artifact's length and width
+
+        Args:
+            image_path: Path to the image file
+
+        Returns:
+            ArtifactMeasurement with scale calibration and artifact dimensions
+        """
+        logger.info(f"Measuring artifact in: {image_path.name}")
+
+        # Load image to get dimensions
+        image = cv2.imread(str(image_path))
+        if image is None:
+            return ArtifactMeasurement(
+                success=False,
+                error=f"Failed to load image: {image_path}"
+            )
+
+        image_height, image_width = image.shape[:2]
+
+        # Encode image for API
+        image_base64 = self.encode_image_file(image_path)
+
+        # Craft the measurement prompt
+        measurement_prompt = f"""Analyze this archaeological photograph. The image is {image_width}x{image_height} pixels.
+
+TASK: Detect the scale ruler and measure the main artifact.
+
+Please identify:
+1. SCALE RULER: Look for a measuring ruler/scale bar in the image (usually on the side or bottom).
+   - What length does the ruler show (in centimeters)?
+   - Measure the pixel length of the ruler from end to end.
+
+2. MAIN ARTIFACT: Identify the main archaeological artifact (pottery, tool, etc.)
+   - Measure its maximum length in pixels
+   - Measure its maximum width in pixels
+
+Return your measurements as JSON in this exact format:
+```json
+{{
+  "scale_ruler": {{
+    "detected": true,
+    "length_cm": 10,
+    "length_pixels": 500,
+    "description": "10cm ruler on the right side"
+  }},
+  "artifact": {{
+    "detected": true,
+    "length_pixels": 800,
+    "width_pixels": 450,
+    "description": "ceramic pottery fragment"
+  }}
+}}
+```
+
+If you cannot detect the scale ruler, set "detected": false.
+Be precise with pixel measurements - estimate carefully based on the image dimensions."""
+
+        # Call the pipeline API
+        try:
+            payload = {
+                "image_base64": image_base64,
+                "prompt": measurement_prompt,
+                "model": self.vision_model
+            }
+
+            response = requests.post(
+                f"{self.pipeline_url}/detect",
+                json=payload,
+                timeout=300
+            )
+            response.raise_for_status()
+            result = response.json()
+
+            if not result.get("success"):
+                return ArtifactMeasurement(
+                    success=False,
+                    error=result.get("error", "Detection failed"),
+                    raw_response=result.get("raw_response", "")
+                )
+
+            # Parse the response
+            raw_response = result.get("raw_response", "")
+            return self._parse_measurement_response(raw_response, image_width, image_height)
+
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Measurement API request failed: {e}")
+            return ArtifactMeasurement(
+                success=False,
+                error=f"API request failed: {e}"
+            )
+
+    def _parse_measurement_response(
+        self,
+        raw_response: str,
+        image_width: int,
+        image_height: int
+    ) -> ArtifactMeasurement:
+        """Parse the Ollama response to extract measurements"""
+        measurement = ArtifactMeasurement(raw_response=raw_response)
+
+        try:
+            # Extract JSON from markdown code blocks if present
+            json_match = re.search(r'```json\s*(.*?)\s*```', raw_response, re.DOTALL)
+            if json_match:
+                json_str = json_match.group(1)
+            else:
+                # Try to find JSON object directly
+                json_match = re.search(r'\{[\s\S]*\}', raw_response)
+                if json_match:
+                    json_str = json_match.group(0)
+                else:
+                    measurement.error = "No JSON found in response"
+                    return measurement
+
+            data = json.loads(json_str)
+
+            # Parse scale ruler data
+            scale_data = data.get("scale_ruler", {})
+            if scale_data.get("detected", False):
+                measurement.scale_detected = True
+                measurement.scale_length_cm = float(scale_data.get("length_cm", 0))
+                measurement.scale_length_pixels = float(scale_data.get("length_pixels", 0))
+
+                # Calculate pixels per cm
+                if measurement.scale_length_cm > 0 and measurement.scale_length_pixels > 0:
+                    measurement.pixels_per_cm = (
+                        measurement.scale_length_pixels / measurement.scale_length_cm
+                    )
+
+            # Parse artifact data
+            artifact_data = data.get("artifact", {})
+            if artifact_data.get("detected", False):
+                measurement.artifact_length_pixels = float(artifact_data.get("length_pixels", 0))
+                measurement.artifact_width_pixels = float(artifact_data.get("width_pixels", 0))
+
+                # Calculate real-world dimensions if we have calibration
+                if measurement.pixels_per_cm > 0:
+                    measurement.artifact_length_cm = (
+                        measurement.artifact_length_pixels / measurement.pixels_per_cm
+                    )
+                    measurement.artifact_width_cm = (
+                        measurement.artifact_width_pixels / measurement.pixels_per_cm
+                    )
+
+            measurement.success = measurement.scale_detected
+            logger.info(f"  Scale: {measurement.scale_length_cm} cm = {measurement.scale_length_pixels:.0f} px")
+            logger.info(f"  Calibration: {measurement.pixels_per_cm:.1f} pixels/cm")
+            if measurement.artifact_length_cm > 0:
+                logger.info(f"  Artifact: {measurement.artifact_length_cm:.1f} x {measurement.artifact_width_cm:.1f} cm")
+
+        except json.JSONDecodeError as e:
+            measurement.error = f"JSON parse error: {e}"
+            logger.error(f"Failed to parse measurement JSON: {e}")
+        except Exception as e:
+            measurement.error = f"Parse error: {e}"
+            logger.error(f"Failed to parse measurement response: {e}")
+
+        return measurement
 
     def remove_background_api(self, image: Image.Image) -> Image.Image:
         """
@@ -307,15 +512,20 @@ class ArcheoBackgroundRemover:
             logger.debug("Using GrabCut for background removal")
             return self.remove_background_grabcut(image)
 
-    def add_scale_bar(self, image: Image.Image) -> Image.Image:
+    def add_scale_bar(
+        self,
+        image: Image.Image,
+        measurement: Optional[ArtifactMeasurement] = None
+    ) -> Image.Image:
         """
-        Add a scale bar overlay to the image.
+        Add a scale bar overlay to the image, optionally with artifact dimensions.
 
         The scale bar is drawn based on the ScaleBarConfig settings.
         Uses pixels_per_cm calibration to convert real-world measurements to pixels.
 
         Args:
             image: PIL Image to add scale bar to
+            measurement: Optional ArtifactMeasurement with artifact dimensions
 
         Returns:
             PIL Image with scale bar overlay
@@ -337,6 +547,20 @@ class ArcheoBackgroundRemover:
         margin = self.scale_bar.margin
 
         img_width, img_height = image.size
+
+        # Try to load a font, fall back to default
+        try:
+            font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                                      self.scale_bar.font_size)
+        except (IOError, OSError):
+            try:
+                font = ImageFont.truetype("/usr/share/fonts/TTF/DejaVuSans.ttf",
+                                          self.scale_bar.font_size)
+            except (IOError, OSError):
+                try:
+                    font = ImageFont.truetype("arial.ttf", self.scale_bar.font_size)
+                except (IOError, OSError):
+                    font = ImageFont.load_default()
 
         # Determine position
         position = self.scale_bar.position.lower()
@@ -392,20 +616,6 @@ class ArcheoBackgroundRemover:
             else:
                 text = f"{self.scale_bar.length_cm * 10:.0f} mm"
 
-            # Try to load a font, fall back to default
-            try:
-                font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-                                          self.scale_bar.font_size)
-            except (IOError, OSError):
-                try:
-                    font = ImageFont.truetype("/usr/share/fonts/TTF/DejaVuSans.ttf",
-                                              self.scale_bar.font_size)
-                except (IOError, OSError):
-                    try:
-                        font = ImageFont.truetype("arial.ttf", self.scale_bar.font_size)
-                    except (IOError, OSError):
-                        font = ImageFont.load_default()
-
             # Get text bounding box
             text_bbox = draw.textbbox((0, 0), text, font=font)
             text_width = text_bbox[2] - text_bbox[0]
@@ -430,12 +640,49 @@ class ArcheoBackgroundRemover:
             # Draw text
             draw.text((text_x, text_y), text, fill=self.scale_bar.text_color, font=font)
 
+        # Add artifact dimensions if measurement is provided and enabled
+        if (self.scale_bar.show_artifact_dimensions and measurement and
+                measurement.artifact_length_cm > 0):
+            dim_text = f"L: {measurement.artifact_length_cm:.1f} cm x W: {measurement.artifact_width_cm:.1f} cm"
+
+            dim_bbox = draw.textbbox((0, 0), dim_text, font=font)
+            dim_width = dim_bbox[2] - dim_bbox[0]
+            dim_height = dim_bbox[3] - dim_bbox[1]
+
+            # Position artifact dimensions in the opposite corner from scale bar
+            if position == "bottom-right":
+                dim_x = margin
+                dim_y = img_height - margin - dim_height
+            elif position == "bottom-left":
+                dim_x = img_width - margin - dim_width
+                dim_y = img_height - margin - dim_height
+            elif position == "top-right":
+                dim_x = margin
+                dim_y = margin
+            else:  # top-left
+                dim_x = img_width - margin - dim_width
+                dim_y = margin
+
+            # Draw background
+            padding = 5
+            draw.rectangle(
+                [dim_x - padding, dim_y - padding,
+                 dim_x + dim_width + padding, dim_y + dim_height + padding],
+                fill=(255, 255, 255, 220)
+            )
+
+            # Draw dimension text
+            draw.text((dim_x, dim_y), dim_text, fill=self.scale_bar.text_color, font=font)
+
         logger.debug(f"Added scale bar: {self.scale_bar.length_cm} cm at {position}")
         return result
 
     def process_image(self, image_path: Path) -> Optional[Path]:
         """
         Process a single image: remove background and optionally add scale bar.
+
+        If auto_calibrate is enabled, uses Ollama to detect the scale ruler
+        and measure the artifact before processing.
 
         Args:
             image_path: Path to input image
@@ -445,7 +692,39 @@ class ArcheoBackgroundRemover:
         """
         logger.info(f"Processing: {image_path.name}")
 
+        measurement = None
+
         try:
+            # Auto-calibrate scale using Ollama if enabled
+            if self.scale_bar.auto_calibrate:
+                logger.info("  Auto-calibrating scale from image...")
+                measurement = self.measure_artifact(image_path)
+
+                if measurement.success and measurement.pixels_per_cm > 0:
+                    # Update scale bar config with detected calibration
+                    self.scale_bar.pixels_per_cm = measurement.pixels_per_cm
+                    self.scale_bar.enabled = True
+                    logger.info(f"  Auto-calibrated: {measurement.pixels_per_cm:.1f} px/cm")
+
+                    # Save measurement data
+                    measurement_file = self.measurements_dir / f"{image_path.stem}_measurement.json"
+                    measurement_data = {
+                        "image": image_path.name,
+                        "scale_detected": measurement.scale_detected,
+                        "scale_length_cm": measurement.scale_length_cm,
+                        "scale_length_pixels": measurement.scale_length_pixels,
+                        "pixels_per_cm": measurement.pixels_per_cm,
+                        "artifact_length_cm": measurement.artifact_length_cm,
+                        "artifact_width_cm": measurement.artifact_width_cm,
+                        "artifact_length_pixels": measurement.artifact_length_pixels,
+                        "artifact_width_pixels": measurement.artifact_width_pixels
+                    }
+                    with open(measurement_file, 'w') as f:
+                        json.dump(measurement_data, f, indent=2)
+                    logger.info(f"  Saved measurements: {measurement_file.name}")
+                else:
+                    logger.warning(f"  Auto-calibration failed: {measurement.error}")
+
             # Load image
             image = Image.open(image_path)
 
@@ -462,7 +741,7 @@ class ArcheoBackgroundRemover:
 
             # Add scale bar if enabled
             if self.scale_bar.enabled:
-                result = self.add_scale_bar(result)
+                result = self.add_scale_bar(result, measurement)
                 logger.info(f"  Added scale bar: {self.scale_bar.length_cm} cm")
 
             # Determine output path (always PNG for transparency support)
@@ -645,6 +924,28 @@ def main():
         help="Font size for scale bar text (default: 24)"
     )
 
+    # Auto-calibration arguments (using Ollama vision)
+    parser.add_argument(
+        "--auto-calibrate",
+        action="store_true",
+        help="Auto-detect scale ruler and calibrate using Ollama vision model"
+    )
+    parser.add_argument(
+        "--show-dimensions",
+        action="store_true",
+        help="Show artifact dimensions (L x W) on the processed image"
+    )
+    parser.add_argument(
+        "--pipeline-url",
+        default="http://localhost:8080",
+        help="URL of vision pipeline API for Ollama (default: http://localhost:8080)"
+    )
+    parser.add_argument(
+        "--vision-model",
+        default="qwen2.5-vl:7b",
+        help="Ollama vision model for measurements (default: qwen2.5-vl:7b)"
+    )
+
     args = parser.parse_args()
 
     # Parse background color
@@ -689,7 +990,7 @@ def main():
 
     # Create scale bar configuration
     scale_bar_config = ScaleBarConfig(
-        enabled=args.scale_bar,
+        enabled=args.scale_bar or args.auto_calibrate,
         length_cm=args.scale_length,
         pixels_per_cm=args.scale_pixels_per_cm,
         position=args.scale_position,
@@ -698,7 +999,9 @@ def main():
         bar_height=args.scale_height,
         margin=args.scale_margin,
         show_text=not args.scale_no_text,
-        font_size=args.scale_font_size
+        font_size=args.scale_font_size,
+        auto_calibrate=args.auto_calibrate,
+        show_artifact_dimensions=args.show_dimensions
     )
 
     # Create remover
@@ -709,7 +1012,9 @@ def main():
         alpha_matting=args.alpha_matting,
         background_color=bg_color,
         api_url=args.api_url,
-        scale_bar=scale_bar_config
+        scale_bar=scale_bar_config,
+        pipeline_url=args.pipeline_url,
+        vision_model=args.vision_model
     )
 
     # Print header
@@ -726,7 +1031,12 @@ def main():
         logger.info("Using: OpenCV GrabCut fallback")
 
     # Show scale bar info
-    if scale_bar_config.enabled:
+    if scale_bar_config.auto_calibrate:
+        logger.info(f"Auto-calibration: ENABLED (using {args.vision_model})")
+        logger.info(f"  Pipeline URL: {args.pipeline_url}")
+        if args.show_dimensions:
+            logger.info("  Artifact dimensions will be displayed on images")
+    elif scale_bar_config.enabled:
         logger.info(f"Scale bar: {scale_bar_config.length_cm} cm ({scale_bar_config.position})")
         logger.info(f"  Calibration: {scale_bar_config.pixels_per_cm} pixels/cm")
 
