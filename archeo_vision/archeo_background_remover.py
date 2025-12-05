@@ -2,17 +2,22 @@
 """
 Archaeological Background Remover
 Removes backgrounds from archaeological artifact images for cleaner analysis and documentation
+
+Supports both local processing (rembg/grabcut) and GPU-accelerated Docker service.
 """
 
 import os
+import io
+import base64
 import argparse
 import logging
 from pathlib import Path
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict, Any
 
 import cv2
 import numpy as np
 from PIL import Image
+import requests
 
 try:
     from rembg import remove, new_session
@@ -32,7 +37,8 @@ class ArcheoBackgroundRemover:
     Removes backgrounds from archaeological artifact images.
 
     Supports multiple background removal methods:
-    - rembg: AI-based removal using U2Net (recommended)
+    - api: Use GPU-accelerated Docker service (recommended for batch processing)
+    - rembg: Local AI-based removal using U2Net
     - grabcut: OpenCV GrabCut algorithm (fallback)
     """
 
@@ -44,23 +50,26 @@ class ArcheoBackgroundRemover:
         method: str = "auto",
         model_name: str = "u2net",
         alpha_matting: bool = False,
-        background_color: Tuple[int, int, int, int] = (0, 0, 0, 0)
+        background_color: Tuple[int, int, int, int] = (0, 0, 0, 0),
+        api_url: str = "http://localhost:8002"
     ):
         """
         Initialize the background remover.
 
         Args:
             shared_path: Path to shared directory containing images
-            method: Background removal method ('rembg', 'grabcut', or 'auto')
-            model_name: Model to use for rembg (u2net, u2netp, u2net_human_seg, etc.)
+            method: Background removal method ('api', 'rembg', 'grabcut', or 'auto')
+            model_name: Model to use (u2net, u2netp, u2net_human_seg, etc.)
             alpha_matting: Enable alpha matting for better edges (slower)
             background_color: RGBA color for background (default: transparent)
+            api_url: URL of the rembg Docker service
         """
         self.shared_path = Path(shared_path)
         self.method = method
         self.model_name = model_name
         self.alpha_matting = alpha_matting
         self.background_color = background_color
+        self.api_url = api_url
 
         # Setup directories
         self.images_dir = self.shared_path / "images"
@@ -69,19 +78,57 @@ class ArcheoBackgroundRemover:
         # Create output directory
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
-        # Initialize rembg session if available and needed
+        # Initialize rembg session if needed for local processing
         self.rembg_session = None
-        if self._should_use_rembg():
+        self._api_available = None
+
+        # Determine actual method to use
+        self._resolved_method = self._resolve_method()
+
+        if self._resolved_method == "rembg":
             self._init_rembg_session()
 
-    def _should_use_rembg(self) -> bool:
-        """Check if rembg should be used"""
+    def _check_api_available(self) -> bool:
+        """Check if the rembg API service is available"""
+        if self._api_available is not None:
+            return self._api_available
+
+        try:
+            response = requests.get(f"{self.api_url}/health", timeout=5)
+            self._api_available = response.status_code == 200
+            if self._api_available:
+                health = response.json()
+                logger.info(f"API service available (GPU: {health.get('gpu_available', False)})")
+        except requests.exceptions.RequestException:
+            self._api_available = False
+
+        return self._api_available
+
+    def _resolve_method(self) -> str:
+        """Resolve the actual method to use based on availability"""
         if self.method == "grabcut":
-            return False
-        if self.method == "rembg" and not REMBG_AVAILABLE:
+            return "grabcut"
+
+        if self.method == "api":
+            if self._check_api_available():
+                return "api"
+            logger.warning("API service not available, falling back to local processing")
+
+        if self.method == "auto":
+            # Try API first, then local rembg, then grabcut
+            if self._check_api_available():
+                return "api"
+            if REMBG_AVAILABLE:
+                return "rembg"
+            return "grabcut"
+
+        if self.method == "rembg":
+            if REMBG_AVAILABLE:
+                return "rembg"
             logger.error("rembg requested but not installed. Install with: pip install rembg")
-            return False
-        return REMBG_AVAILABLE
+            return "grabcut"
+
+        return "grabcut"
 
     def _init_rembg_session(self):
         """Initialize rembg session for faster batch processing"""
@@ -91,6 +138,59 @@ class ArcheoBackgroundRemover:
         except Exception as e:
             logger.warning(f"Failed to initialize rembg session: {e}")
             self.rembg_session = None
+
+    def encode_image(self, image: Image.Image) -> str:
+        """Encode PIL Image to base64 string"""
+        buffer = io.BytesIO()
+        # Save as PNG to preserve quality
+        image.save(buffer, format="PNG")
+        buffer.seek(0)
+        return base64.b64encode(buffer.read()).decode()
+
+    def decode_image(self, image_base64: str) -> Image.Image:
+        """Decode base64 string to PIL Image"""
+        image_bytes = base64.b64decode(image_base64)
+        return Image.open(io.BytesIO(image_bytes))
+
+    def remove_background_api(self, image: Image.Image) -> Image.Image:
+        """
+        Remove background using the Docker API service.
+
+        Args:
+            image: PIL Image to process
+
+        Returns:
+            PIL Image with transparent background
+        """
+        # Encode image
+        image_base64 = self.encode_image(image)
+
+        # Prepare request payload
+        payload = {
+            "image_base64": image_base64,
+            "model": self.model_name,
+            "alpha_matting": self.alpha_matting,
+            "bgcolor": self.background_color if self.background_color != (0, 0, 0, 0) else None
+        }
+
+        # Send request
+        try:
+            response = requests.post(
+                f"{self.api_url}/remove",
+                json=payload,
+                timeout=300  # 5 minute timeout for large images
+            )
+            response.raise_for_status()
+            result = response.json()
+
+            if not result.get("success"):
+                raise RuntimeError(f"API error: {result.get('error', 'Unknown error')}")
+
+            # Decode result
+            return self.decode_image(result["image_base64"])
+
+        except requests.exceptions.RequestException as e:
+            raise RuntimeError(f"API request failed: {e}")
 
     def remove_background_rembg(self, image: Image.Image) -> Image.Image:
         """
@@ -177,11 +277,11 @@ class ArcheoBackgroundRemover:
         Returns:
             PIL Image with background removed
         """
-        # Determine method to use
-        use_rembg = self._should_use_rembg()
-
-        if use_rembg:
-            logger.debug("Using rembg for background removal")
+        if self._resolved_method == "api":
+            logger.debug("Using API service for background removal")
+            return self.remove_background_api(image)
+        elif self._resolved_method == "rembg":
+            logger.debug("Using local rembg for background removal")
             return self.remove_background_rembg(image)
         else:
             logger.debug("Using GrabCut for background removal")
@@ -250,7 +350,7 @@ class ArcheoBackgroundRemover:
 
         logger.info(f"Found {len(image_files)} images to process")
         logger.info(f"Output directory: {self.output_dir}")
-        logger.info(f"Method: {'rembg' if self._should_use_rembg() else 'grabcut'}")
+        logger.info(f"Method: {self._resolved_method}")
 
         # Process each image
         success_count = 0
@@ -315,15 +415,20 @@ def main():
     )
     parser.add_argument(
         "--method",
-        choices=["auto", "rembg", "grabcut"],
+        choices=["auto", "api", "rembg", "grabcut"],
         default="auto",
-        help="Background removal method (default: auto)"
+        help="Background removal method (default: auto - tries api, then rembg, then grabcut)"
+    )
+    parser.add_argument(
+        "--api-url",
+        default="http://localhost:8002",
+        help="URL of rembg Docker service (default: http://localhost:8002)"
     )
     parser.add_argument(
         "--model",
         default="u2net",
         choices=["u2net", "u2netp", "u2net_human_seg", "u2net_cloth_seg", "silueta", "isnet-general-use"],
-        help="Model for rembg (default: u2net)"
+        help="Model for background removal (default: u2net)"
     )
     parser.add_argument(
         "--alpha-matting",
@@ -365,7 +470,8 @@ def main():
         method=args.method,
         model_name=args.model,
         alpha_matting=args.alpha_matting,
-        background_color=bg_color
+        background_color=bg_color,
+        api_url=args.api_url
     )
 
     # Print header
@@ -373,9 +479,13 @@ def main():
     logger.info("Archaeological Background Remover")
     logger.info("=" * 60)
 
-    if not REMBG_AVAILABLE and args.method != "grabcut":
-        logger.warning("\nrembg not installed. Using GrabCut fallback.")
-        logger.warning("For best results, install rembg: pip install rembg")
+    # Show method info
+    if remover._resolved_method == "api":
+        logger.info(f"Using: Docker API service at {args.api_url}")
+    elif remover._resolved_method == "rembg":
+        logger.info("Using: Local rembg (CPU)")
+    else:
+        logger.info("Using: OpenCV GrabCut fallback")
 
     # Process
     if args.input:
