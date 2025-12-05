@@ -241,51 +241,57 @@ class ArcheoBackgroundRemover:
         image_base64 = self.encode_image_file(image_path)
 
         # Simplified measurement prompt - only ask for CM values, not pixels
-        measurement_prompt = """You are an expert archaeological measurement system.
+        measurement_prompt = """You are an expert archaeological measurement system. Be EXTREMELY PRECISE.
 
 ## TASK: Measure this image using the visible scale bar
 
-### Step 1: FIND THE SCALE BAR
+### Step 1: FIND AND READ THE SCALE BAR CAREFULLY
 Look for the scale bar/ruler on the LEFT, BOTTOM, or RIGHT side of the artifact.
-Identify what length the scale bar represents (e.g., 5cm, 10cm, 15cm).
+- Count the EXACT centimeter markings visible on the scale bar
+- Look for millimeter subdivisions between centimeter marks
+- The scale bar may NOT be exactly 10cm - it could be 9cm, 9.5cm, 8cm, 12cm, etc.
+- Report the PRECISE length to one decimal place (e.g., 9.3 cm, not "about 10 cm")
+- Do NOT assume the scale is 10cm - READ the actual markings!
 
 ### Step 2: MEASURE THE IMAGE
 Using the scale bar as your reference, measure:
 - The LONGEST SIDE of the entire image in centimeters
 - This is the full width OR height of the photo (whichever is larger)
+- Be precise to one decimal place
 
 ### Step 3: MEASURE THE ARTIFACT
 Using the scale bar, measure the archaeological artifact:
 - LENGTH: The longest dimension of the artifact in centimeters
 - WIDTH: The perpendicular dimension of the artifact in centimeters
+- Be precise to one decimal place
 
 ## OUTPUT FORMAT (JSON only, no other text)
 ```json
 {
   "scale_bar": {
     "detected": true,
-    "length_cm": 10.0,
+    "length_cm": 9.3,
     "position": "left",
-    "description": "10cm scale bar on the left side"
+    "description": "Scale bar showing 9cm plus 3mm markings"
   },
   "image": {
-    "longest_side_cm": 25.5,
+    "longest_side_cm": 24.8,
     "orientation": "horizontal"
   },
   "artifact": {
     "detected": true,
-    "length_cm": 12.3,
-    "width_cm": 8.7,
+    "length_cm": 11.5,
+    "width_cm": 7.2,
     "description": "ceramic pottery fragment"
   }
 }
 ```
 
-IMPORTANT:
-- All measurements must be in CENTIMETERS only
-- Do NOT report pixel values - only centimeter measurements
-- Use the scale bar markings to measure accurately
-- If scale shows millimeters, convert to centimeters (10mm = 1cm)
+CRITICAL PRECISION RULES:
+- READ the actual scale bar markings - do NOT assume 10cm or any round number
+- Count centimeter lines AND millimeter subdivisions carefully
+- Report all measurements to ONE DECIMAL PLACE (e.g., 9.3 cm, 24.8 cm)
+- If scale shows only millimeters, convert precisely (93mm = 9.3cm)
 - Set "detected": false if you cannot find the scale bar"""
 
         # Call the pipeline API
