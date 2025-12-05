@@ -122,7 +122,7 @@ class ArcheoBackgroundRemover:
         self.vision_model = vision_model
 
         # Setup directories
-        self.images_dir = self.shared_path / "Final"
+        self.images_dir = self.shared_path / "final"
         self.output_dir = self.shared_path / "no_background"
         self.measurements_dir = self.shared_path / "measurements"
 
