@@ -95,7 +95,7 @@ class ArcheoBackgroundRemover:
         api_url: str = "http://localhost:8002",
         scale_bar: Optional[ScaleBarConfig] = None,
         pipeline_url: str = "http://localhost:8080",
-        vision_model: str = "qwen2.5-vl:7b"
+        vision_model: str = "qwen2.5vl:72b"
     ):
         """
         Initialize the background remover.
@@ -109,7 +109,7 @@ class ArcheoBackgroundRemover:
             api_url: URL of the rembg Docker service
             scale_bar: Scale bar configuration (None to disable)
             pipeline_url: URL of the vision pipeline API for Ollama (for auto-calibration)
-            vision_model: Ollama vision model for measurements (default: qwen2.5-vl:7b)
+            vision_model: Ollama vision model for measurements (default: qwen2.5vl:72b)
         """
         self.shared_path = Path(shared_path)
         self.method = method
@@ -240,40 +240,65 @@ class ArcheoBackgroundRemover:
         # Encode image for API
         image_base64 = self.encode_image_file(image_path)
 
-        # Craft the measurement prompt
-        measurement_prompt = f"""Analyze this archaeological photograph. The image is {image_width}x{image_height} pixels.
+        # Craft the measurement prompt - optimized for Qwen2.5-VL 72B precision
+        measurement_prompt = f"""You are an expert archaeological measurement system. Analyze this photograph with EXTREME PRECISION.
 
-TASK: Detect the scale ruler and measure the main artifact.
+IMAGE DIMENSIONS: {image_width} x {image_height} pixels
 
-Please identify:
-1. SCALE RULER: Look for a measuring ruler/scale bar in the image (usually on the side or bottom).
-   - What length does the ruler show (in centimeters)?
-   - Measure the pixel length of the ruler from end to end.
+## CRITICAL MEASUREMENT TASK
 
-2. MAIN ARTIFACT: Identify the main archaeological artifact (pottery, tool, etc.)
-   - Measure its maximum length in pixels
-   - Measure its maximum width in pixels
+### Step 1: SCALE RULER DETECTION
+Carefully locate the measuring scale/ruler in the image. Common locations: bottom edge, right side, or next to the artifact.
+- Identify the START POINT (0 mark) pixel coordinates
+- Identify the END POINT pixel coordinates
+- Read the measurement markings to determine the REAL LENGTH in centimeters
+- Calculate the pixel distance between start and end points
 
-Return your measurements as JSON in this exact format:
+### Step 2: ARTIFACT MEASUREMENT
+Identify the main archaeological artifact and measure:
+- BOUNDING BOX: Find the extreme points (leftmost, rightmost, topmost, bottommost pixels)
+- LENGTH: Maximum horizontal extent in pixels (rightmost_x - leftmost_x)
+- WIDTH: Maximum vertical extent in pixels (bottommost_y - topmost_y)
+- Note: If artifact is rotated, measure along the longest axis for length
+
+### Step 3: PRECISION CALCULATIONS
+- Use the scale ruler to calculate PIXELS PER CENTIMETER
+- Convert artifact pixel measurements to real-world centimeters
+
+## OUTPUT FORMAT (JSON only, no other text)
 ```json
 {{
   "scale_ruler": {{
     "detected": true,
-    "length_cm": 10,
+    "start_x": 100,
+    "start_y": 950,
+    "end_x": 600,
+    "end_y": 950,
+    "length_cm": 10.0,
     "length_pixels": 500,
-    "description": "10cm ruler on the right side"
+    "pixels_per_cm": 50.0,
+    "description": "10cm ruler along bottom edge"
   }},
   "artifact": {{
     "detected": true,
-    "length_pixels": 800,
-    "width_pixels": 450,
-    "description": "ceramic pottery fragment"
+    "bbox": {{
+      "left": 150,
+      "top": 100,
+      "right": 850,
+      "bottom": 600
+    }},
+    "length_pixels": 700,
+    "width_pixels": 500,
+    "description": "ceramic pottery fragment, roughly oval shape"
   }}
 }}
 ```
 
-If you cannot detect the scale ruler, set "detected": false.
-Be precise with pixel measurements - estimate carefully based on the image dimensions."""
+IMPORTANT:
+- Be PRECISE with pixel coordinates - examine the image carefully
+- If ruler shows millimeters, convert to centimeters (10mm = 1cm)
+- If scale is partially visible, estimate the full length based on visible markings
+- Set "detected": false if you cannot find the scale ruler"""
 
         # Call the pipeline API
         try:
@@ -341,8 +366,10 @@ Be precise with pixel measurements - estimate carefully based on the image dimen
                 measurement.scale_length_cm = float(scale_data.get("length_cm", 0))
                 measurement.scale_length_pixels = float(scale_data.get("length_pixels", 0))
 
-                # Calculate pixels per cm
-                if measurement.scale_length_cm > 0 and measurement.scale_length_pixels > 0:
+                # Use model-provided pixels_per_cm if available, otherwise calculate
+                if "pixels_per_cm" in scale_data and scale_data["pixels_per_cm"] > 0:
+                    measurement.pixels_per_cm = float(scale_data["pixels_per_cm"])
+                elif measurement.scale_length_cm > 0 and measurement.scale_length_pixels > 0:
                     measurement.pixels_per_cm = (
                         measurement.scale_length_pixels / measurement.scale_length_cm
                     )
@@ -350,8 +377,22 @@ Be precise with pixel measurements - estimate carefully based on the image dimen
             # Parse artifact data
             artifact_data = data.get("artifact", {})
             if artifact_data.get("detected", False):
-                measurement.artifact_length_pixels = float(artifact_data.get("length_pixels", 0))
-                measurement.artifact_width_pixels = float(artifact_data.get("width_pixels", 0))
+                # Handle both direct and bbox formats
+                if "bbox" in artifact_data:
+                    bbox = artifact_data["bbox"]
+                    measurement.artifact_length_pixels = float(
+                        bbox.get("right", 0) - bbox.get("left", 0)
+                    )
+                    measurement.artifact_width_pixels = float(
+                        bbox.get("bottom", 0) - bbox.get("top", 0)
+                    )
+                else:
+                    measurement.artifact_length_pixels = float(
+                        artifact_data.get("length_pixels", 0)
+                    )
+                    measurement.artifact_width_pixels = float(
+                        artifact_data.get("width_pixels", 0)
+                    )
 
                 # Calculate real-world dimensions if we have calibration
                 if measurement.pixels_per_cm > 0:
@@ -942,8 +983,8 @@ def main():
     )
     parser.add_argument(
         "--vision-model",
-        default="qwen2.5-vl:7b",
-        help="Ollama vision model for measurements (default: qwen2.5-vl:7b)"
+        default="qwen2.5vl:72b",
+        help="Ollama vision model for measurements (default: qwen2.5vl:72b for L40S/A100)"
     )
 
     args = parser.parse_args()
