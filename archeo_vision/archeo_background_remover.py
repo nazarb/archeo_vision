@@ -984,7 +984,16 @@ def main():
     parser.add_argument(
         "--vision-model",
         default="qwen2.5vl:72b",
-        help="Ollama vision model for measurements (default: qwen2.5vl:72b for L40S/A100)"
+        help="""Ollama VISION model for measurements. Must be a VL (Vision-Language) model.
+                Recommended models by VRAM:
+                - qwen2.5vl:72b (45GB+ VRAM, best accuracy) [DEFAULT for L40S/A100]
+                - qwen2.5vl:72b-q4_K_M (40GB VRAM, quantized)
+                - minicpm-v:8b (8GB VRAM, excellent accuracy)
+                - qwen2.5vl:32b (20GB VRAM, very good)
+                - qwen2.5vl:7b (6GB VRAM, good)
+                - llava:34b (20GB VRAM)
+                - llava:13b (10GB VRAM)
+                NOTE: Text-only models (ERNIE, Llama, etc.) will NOT work!"""
     )
 
     args = parser.parse_args()
