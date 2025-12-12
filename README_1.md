@@ -1,3 +1,5 @@
+http://localhost:5678/settings/usage?key=8d55100e-e330-4a09-8786-63dbf549d414
+
 Tested on Ubuntu. Version 1.00 with bugs 
 
 # Workflow
